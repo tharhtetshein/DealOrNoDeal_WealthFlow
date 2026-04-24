@@ -1,12 +1,15 @@
+import { useRef } from 'react'
 import { 
   ArrowRight, 
   Play, 
+  User,
   Zap, 
   Shield, 
   BarChart3, 
   FileText,
   CheckCircle2,
   Clock,
+  ChevronLeft,
   ChevronRight,
   Building2,
   PieChart,
@@ -16,29 +19,57 @@ import {
 
 const benefits = [
   {
-    icon: Clock,
-    stat: '90%',
-    title: 'Reduction in Review Time',
-    description: 'Cut the review period through bank statements and property deeds in seconds, not hours.',
+    icon: User,
+    title: 'Client Intake',
+    description: 'Capture client profile, nationality, occupation, wealth source, and risk inputs in a structured flow.',
     color: 'primary'
   },
   {
-    icon: Shield,
-    title: 'Vault Security',
-    description: 'AES-256 encryption for every document, ensuring data is always & never compromised.',
-    highlight: true,
+    icon: FileText,
+    title: 'Document Upload',
+    description: 'Upload and process required onboarding documents including PDF and text-based files.',
     color: 'primary'
   },
   {
     icon: Zap,
-    title: 'AI-Driven Insights',
-    description: 'Identify anomalous wealth patterns, sanction risk, and potential red flags automatically.',
+    title: 'AI SoW Draft Generation',
+    description: 'Generate source-of-wealth drafts from uploaded documents and intake data.',
     color: 'tertiary'
   },
   {
-    icon: FileText,
-    title: 'Audit-Ready Packs',
-    description: 'Generate standardized, regulator-friendly reports with the click of a button.',
+    icon: Shield,
+    title: 'Risk Flag Detection',
+    description: 'Detect missing evidence, compliance risks, and escalation triggers automatically.',
+    color: 'error'
+  },
+  {
+    icon: BarChart3,
+    title: 'Compliance Dashboard',
+    description: 'Review case readiness, checklist progress, and risk outcomes in one screen.',
+    color: 'tertiary'
+  },
+  {
+    icon: CheckCircle2,
+    title: 'Verification Workspace',
+    description: 'Track verification status and supporting checks before final approval.',
+    color: 'primary'
+  },
+  {
+    icon: Clock,
+    title: 'Audit Trail',
+    description: 'Maintain traceable actions and review history across onboarding stages.',
+    color: 'tertiary'
+  },
+  {
+    icon: PieChart,
+    title: 'Risk Readiness Review',
+    description: 'Assess readiness with consolidated regulatory, verification, and document signals.',
+    color: 'primary'
+  },
+  {
+    icon: Lock,
+    title: 'Vault & Regulatory Views',
+    description: 'Access secure storage views and regulatory-focused case insights.',
     color: 'primary'
   }
 ]
@@ -65,6 +96,25 @@ const steps = [
 ]
 
 export default function Landing({ onStart }) {
+  const featuresRef = useRef(null)
+
+  const scrollToFeatures = (event) => {
+    event.preventDefault()
+    const target = document.getElementById('features')
+    if (target) {
+      target.scrollIntoView({ behavior: 'smooth', block: 'start' })
+    }
+  }
+
+  const scrollFeatures = (direction) => {
+    if (!featuresRef.current) {
+      return
+    }
+
+    const offset = direction === 'left' ? -360 : 360
+    featuresRef.current.scrollBy({ left: offset, behavior: 'smooth' })
+  }
+
   return (
     <div className="min-h-screen bg-surface">
       {/* Header */}
@@ -80,7 +130,7 @@ export default function Landing({ onStart }) {
         </div>
         
         <nav className="flex items-center gap-8">
-          <a href="#" className="text-sm text-on-surface-variant hover:text-on-surface transition-colors">Features</a>
+          <a href="#features" onClick={scrollToFeatures} className="text-sm text-on-surface-variant hover:text-on-surface transition-colors">Features</a>
           <a href="#" className="text-sm text-on-surface-variant hover:text-on-surface transition-colors">Pricing</a>
           <a href="#" className="text-sm text-on-surface-variant hover:text-on-surface transition-colors">Security</a>
           <a href="#" className="text-sm text-on-surface-variant hover:text-on-surface transition-colors">Contact</a>
@@ -139,40 +189,81 @@ export default function Landing({ onStart }) {
       </section>
 
       {/* Benefits Section */}
-      <section className="px-8 py-16 bg-surface-container-low">
+      <section id="features" className="px-8 py-16 bg-surface-container-low">
         <div className="max-w-6xl mx-auto">
           <div className="text-center mb-12">
-            <h2 className="font-display text-2xl font-bold text-on-surface mb-2">Precision Engineered Benefits</h2>
-            <p className="text-sm text-on-surface-variant">Designed for the low-down & high-net-worth service matrix where speed and accuracy are paramount.</p>
+            <h2 className="font-display text-2xl font-bold text-on-surface mb-2">Platform Features</h2>
+            <p className="text-sm text-on-surface-variant">Everything available in WealthFlow for onboarding, review, and compliance.</p>
           </div>
-          
-          <div className="grid grid-cols-4 gap-6">
-            {benefits.map((benefit, idx) => {
-              const Icon = benefit.icon
-              return (
-                <div 
-                  key={idx} 
-                  className={`rounded-xl p-6 ${benefit.highlight ? 'gradient-primary text-white' : 'bg-surface-container-lowest shadow-ambient'}`}
-                >
-                  <div className={`w-12 h-12 rounded-lg flex items-center justify-center mb-4 ${
-                    benefit.highlight ? 'bg-white/20' : `bg-${benefit.color}/10`
-                  }`}>
-                    <Icon className={`w-6 h-6 ${benefit.highlight ? 'text-white' : `text-${benefit.color}`}`} />
+
+          <div className="relative">
+            <button
+              type="button"
+              onClick={() => scrollFeatures('left')}
+              aria-label="Scroll features left"
+              className="group hidden lg:flex absolute -left-5 top-1/2 -translate-y-1/2 z-10 w-11 h-11 rounded-full bg-white/85 backdrop-blur border border-black/10 text-on-surface hover:bg-white hover:-translate-y-1/2 hover:scale-105 active:scale-95 transition-all duration-200 items-center justify-center shadow-[0_8px_24px_rgba(0,0,0,0.14)]"
+            >
+              <ChevronLeft className="w-5 h-5 transition-transform duration-200 group-hover:-translate-x-0.5" />
+            </button>
+            <button
+              type="button"
+              onClick={() => scrollFeatures('right')}
+              aria-label="Scroll features right"
+              className="group hidden lg:flex absolute -right-5 top-1/2 -translate-y-1/2 z-10 w-11 h-11 rounded-full bg-white/85 backdrop-blur border border-black/10 text-on-surface hover:bg-white hover:-translate-y-1/2 hover:scale-105 active:scale-95 transition-all duration-200 items-center justify-center shadow-[0_8px_24px_rgba(0,0,0,0.14)]"
+            >
+              <ChevronRight className="w-5 h-5 transition-transform duration-200 group-hover:translate-x-0.5" />
+            </button>
+
+            <div
+              ref={featuresRef}
+              className="overflow-x-auto pb-2 snap-x snap-mandatory [-ms-overflow-style:none] [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
+            >
+              <div className="flex gap-4 md:gap-6 w-max pr-2">
+              {benefits.map((benefit, idx) => {
+                const Icon = benefit.icon
+                return (
+                  <div
+                    key={idx}
+                    className="w-[78vw] max-w-[320px] md:w-[320px] shrink-0 snap-start rounded-xl p-6 bg-surface-container-lowest shadow-ambient"
+                  >
+                    <div className={`w-12 h-12 rounded-lg flex items-center justify-center mb-4 bg-${benefit.color}/10`}>
+                      <Icon className={`w-6 h-6 text-${benefit.color}`} />
+                    </div>
+
+                    {benefit.stat && (
+                      <p className="font-display text-3xl font-bold mb-2">{benefit.stat}</p>
+                    )}
+
+                    <h3 className="font-display text-lg font-bold mb-2 text-on-surface">
+                      {benefit.title}
+                    </h3>
+                    <p className="text-sm leading-relaxed text-on-surface-variant">
+                      {benefit.description}
+                    </p>
                   </div>
-                  
-                  {benefit.stat && (
-                    <p className="font-display text-3xl font-bold mb-2">{benefit.stat}</p>
-                  )}
-                  
-                  <h3 className={`font-display text-lg font-bold mb-2 ${benefit.highlight ? 'text-white' : 'text-on-surface'}`}>
-                    {benefit.title}
-                  </h3>
-                  <p className={`text-sm leading-relaxed ${benefit.highlight ? 'text-white/80' : 'text-on-surface-variant'}`}>
-                    {benefit.description}
-                  </p>
-                </div>
-              )
-            })}
+                )
+              })}
+              </div>
+            </div>
+
+            <div className="lg:hidden flex justify-center gap-3 mt-4">
+              <button
+                type="button"
+                onClick={() => scrollFeatures('left')}
+                aria-label="Scroll features left"
+                className="group w-10 h-10 rounded-full bg-white/90 border border-black/10 text-on-surface transition-all duration-200 flex items-center justify-center shadow-sm active:scale-95"
+              >
+                <ChevronLeft className="w-5 h-5 transition-transform duration-200 group-active:-translate-x-0.5" />
+              </button>
+              <button
+                type="button"
+                onClick={() => scrollFeatures('right')}
+                aria-label="Scroll features right"
+                className="group w-10 h-10 rounded-full bg-white/90 border border-black/10 text-on-surface transition-all duration-200 flex items-center justify-center shadow-sm active:scale-95"
+              >
+                <ChevronRight className="w-5 h-5 transition-transform duration-200 group-active:translate-x-0.5" />
+              </button>
+            </div>
           </div>
         </div>
       </section>
@@ -207,27 +298,6 @@ export default function Landing({ onStart }) {
         </div>
       </section>
 
-      {/* CTA Section */}
-      <section className="px-8 py-16">
-        <div className="max-w-4xl mx-auto rounded-2xl bg-surface-container p-12 text-center relative overflow-hidden">
-          <div className="absolute top-0 right-0 w-64 h-64 bg-primary/5 rounded-full -translate-y-1/2 translate-x-1/2" />
-          
-          <h2 className="font-display text-3xl font-bold text-on-surface mb-4 relative z-10">
-            Elevate your compliance standards today.
-          </h2>
-          <p className="text-on-surface-variant mb-8 max-w-lg mx-auto relative z-10">
-            Join elite private banking institutions and law firms using WealthFlow to streamline onboarding for HNW clients.
-          </p>
-          
-          <button 
-            onClick={onStart}
-            className="px-8 py-4 gradient-primary text-white rounded-lg font-medium hover:opacity-90 transition-opacity shadow-ambient relative z-10"
-          >
-            Get Started Now
-          </button>
-        </div>
-      </section>
-
       {/* Footer */}
       <footer className="px-8 py-8 border-t border-outline/10">
         <div className="max-w-6xl mx-auto flex items-center justify-between">
@@ -250,7 +320,7 @@ export default function Landing({ onStart }) {
         </div>
         
         <div className="max-w-6xl mx-auto mt-8 pt-4 border-t border-outline/5 flex items-center justify-between text-xs text-on-surface-variant">
-          <p>© 2024 WealthFlow Technologies. All rights reserved. Registered Office: 87 St. Vincent Street, London EC2A 4DN.</p>
+          <p>© 2026 WealthFlow Technologies. All rights reserved.</p>
           <div className="flex items-center gap-4">
             <Globe className="w-4 h-4" />
             <div className="w-4 h-4 rounded-full bg-on-surface-variant/20" />

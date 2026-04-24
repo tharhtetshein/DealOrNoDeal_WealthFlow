@@ -10,24 +10,29 @@
     "server": "node server.js"
   },
   "dependencies": {
-    "react": "^18.3.1",
-    "react-dom": "^18.3.1",
-    "lucide-react": "^0.344.0",
     "clsx": "^2.1.0",
-    "tailwind-merge": "^2.2.1",
+    "cors": "^2.8.5",
+    "dotenv": "^16.4.1",
     "express": "^4.18.2",
+    "firebase": "^12.12.1",
+    "firebase-admin": "^13.8.0",
     "groq-sdk": "^0.7.0",
+    "lucide-react": "^0.344.0",
     "multer": "^1.4.5-lts.1",
     "pdf-parse": "^1.1.1",
-    "cors": "^2.8.5",
-    "dotenv": "^16.4.1"
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "tailwind-merge": "^2.2.1",
+    "tesseract.js": "^7.0.0"
   },
   "devDependencies": {
+    "@prisma/client": "^7.8.0",
     "@types/react": "^18.3.1",
     "@types/react-dom": "^18.3.0",
     "@vitejs/plugin-react": "^4.2.1",
     "autoprefixer": "^10.4.18",
     "postcss": "^8.4.35",
+    "prisma": "^7.8.0",
     "tailwindcss": "^3.4.1",
     "vite": "^5.1.4"
   }

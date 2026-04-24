@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import Sidebar from './components/Sidebar'
 import Header from './components/Header'
 
@@ -6,6 +6,9 @@ import Header from './components/Header'
 import Landing from './screens/Landing'
 import RoleSelection from './screens/RoleSelection'
 import Dashboard from './screens/Dashboard'
+import RMDashboard from './screens/RMDashboard'
+import ComplianceReviewerDashboard from './screens/ComplianceReviewerDashboard'
+import OpsOnboardingDashboard from './screens/OpsOnboardingDashboard'
 import AuditTrail from './screens/AuditTrail'
 import Vault from './screens/Vault'
 import Verification from './screens/Verification'
@@ -15,6 +18,8 @@ import RiskReadiness from './screens/RiskReadiness'
 import Extraction from './screens/Extraction'
 import FollowUp from './screens/FollowUp'
 import WealthReview from './screens/WealthReview'
+import SavedCaseFiles from './screens/SavedCaseFiles'
+import CaseDetail from './screens/CaseDetail'
 
 // Legacy screens for compatibility
 import ClientIntake from './screens/ClientIntake'
@@ -24,21 +29,36 @@ import RiskFlags from './screens/RiskFlags'
 import ComplianceDashboard from './screens/ComplianceDashboard'
 
 function App() {
-  const [currentScreen, setCurrentScreen] = useState('landing')
+  const [currentScreen, setCurrentScreen] = useState(() => {
+    if (typeof window === 'undefined') return 'landing'
+    return sessionStorage.getItem('wealthflow.currentScreen') || 'landing'
+  })
+  const [selectedRole, setSelectedRole] = useState(() => {
+    if (typeof window === 'undefined') return 'ops'
+    return sessionStorage.getItem('wealthflow.selectedRole') || 'ops'
+  })
   const [clientData, setClientData] = useState(null)
   const [documents, setDocuments] = useState({})
   const [sowData, setSowData] = useState(null)
+
+  useEffect(() => {
+    sessionStorage.setItem('wealthflow.currentScreen', currentScreen)
+  }, [currentScreen])
+
+  useEffect(() => {
+    sessionStorage.setItem('wealthflow.selectedRole', selectedRole)
+  }, [selectedRole])
 
   const handleNavigate = (screen) => {
     setCurrentScreen(screen)
   }
 
   // Layout wrapper for app screens (with sidebar)
-  const AppLayout = ({ children, activeItem }) => (
-    <div className="flex min-h-screen bg-surface">
-      <Sidebar activeItem={activeItem} onNavigate={handleNavigate} />
-      <div className="flex-1 ml-64">
-        <Header />
+  const AppLayout = ({ children, activeItem, headerProps }) => (
+    <div className="min-h-screen bg-surface">
+      <Sidebar activeItem={activeItem} onNavigate={handleNavigate} role={selectedRole} />
+      <div className="min-h-screen pl-64">
+        <Header {...headerProps} />
         <main className="pt-0">
           {children}
         </main>
@@ -53,12 +73,20 @@ function App() {
         return <Landing onStart={() => setCurrentScreen('role-selection')} />
       
       case 'role-selection':
-        return <RoleSelection onContinue={() => setCurrentScreen('dashboard')} />
+        return (
+          <RoleSelection
+            onBack={() => setCurrentScreen('landing')}
+            onContinue={(role) => {
+              setSelectedRole(role)
+              setCurrentScreen('dashboard')
+            }}
+          />
+        )
       
       case 'dashboard':
         return (
-          <AppLayout activeItem="dashboard">
-            <Dashboard />
+          <AppLayout activeItem="dashboard" headerProps={selectedRole === 'rm' ? { showSearch: false } : undefined}>
+            {selectedRole === 'rm' ? <RMDashboard onNavigate={handleNavigate} /> : selectedRole === 'compliance' ? <ComplianceReviewerDashboard /> : selectedRole === 'ops' ? <OpsOnboardingDashboard /> : <Dashboard />}
           </AppLayout>
         )
       
@@ -72,7 +100,7 @@ function App() {
       case 'documents':
         return (
           <AppLayout activeItem="documents">
-            <Vault />
+            <Vault onNavigate={handleNavigate} />
           </AppLayout>
         )
       
@@ -85,8 +113,13 @@ function App() {
       
       case 'new-case':
         return (
-          <AppLayout activeItem="cases">
-            <NewCase />
+          <AppLayout activeItem={selectedRole === 'rm' ? 'dashboard' : 'cases'}>
+            <NewCase
+              onNext={() => setCurrentScreen('verification')}
+              setClientData={setClientData}
+              setSowData={setSowData}
+              onNavigate={handleNavigate}
+            />
           </AppLayout>
         )
       
@@ -122,6 +155,13 @@ function App() {
         return (
           <AppLayout activeItem="cases">
             <WealthReview />
+          </AppLayout>
+        )
+
+      case 'case-detail':
+        return (
+          <AppLayout activeItem="dashboard" headerProps={selectedRole === 'rm' ? { showSearch: false } : undefined}>
+            <CaseDetail onNavigate={handleNavigate} />
           </AppLayout>
         )
       
@@ -186,6 +226,13 @@ function App() {
               documents={documents}
               sowData={sowData}
             />
+          </AppLayout>
+        )
+      
+      case 'cases':
+        return (
+          <AppLayout activeItem="cases">
+            <SavedCaseFiles onNavigate={handleNavigate} />
           </AppLayout>
         )
       

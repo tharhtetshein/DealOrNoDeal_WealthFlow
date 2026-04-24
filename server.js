@@ -6,6 +6,7 @@ import dotenv from 'dotenv'
 import { Groq } from 'groq-sdk'
 import fs from 'fs'
 import path from 'path'
+import Tesseract from 'tesseract.js'
 
 dotenv.config()
 
@@ -18,22 +19,168 @@ const groq = new Groq({
 app.use(cors())
 app.use(express.json())
 
+const KYC_AML_SYSTEM_PROMPT = `You are an AI assistant embedded in a banking onboarding system called "WealthFlow SoW".
+
+Your role is to analyze client onboarding data and uploaded documents to support Relationship Managers (RM) and Compliance Reviewers.
+
+You MUST follow real-world KYC (Know Your Customer) and AML (Anti-Money Laundering) principles.
+
+You will receive:
+1. Client Profile (intake form)
+2. Uploaded Documents (text extracted)
+
+Your tasks are:
+1. Extract key information from documents
+2. Validate extracted data against the client profile
+3. Assess document completeness for KYC and Source of Wealth verification
+4. Generate a professional Source of Wealth draft
+5. Identify and classify risk factors
+6. Suggest clear next actions
+
+Important rules:
+- Do NOT make assumptions without evidence
+- Clearly indicate uncertainty when evidence is weak
+- Do NOT approve or reject cases
+- Support human decision-making only
+- Keep outputs clear, structured, and easy to scan`
+
+function parseJsonResponse(content) {
+  const cleaned = content
+    .replace(/^```json\s*/i, '')
+    .replace(/^```\s*/i, '')
+    .replace(/\s*```$/i, '')
+    .trim()
+  try {
+    return JSON.parse(cleaned)
+  } catch {
+    const firstBrace = cleaned.indexOf('{')
+    const lastBrace = cleaned.lastIndexOf('}')
+    if (firstBrace >= 0 && lastBrace > firstBrace) {
+      return JSON.parse(cleaned.slice(firstBrace, lastBrace + 1))
+    }
+    throw new Error('Model response was not valid JSON')
+  }
+}
+
+function cleanupUploadedFiles(files = []) {
+  for (const file of files) {
+    if (file?.path && fs.existsSync(file.path)) {
+      fs.unlinkSync(file.path)
+    }
+  }
+}
+
+function buildClientProfileSummary(clientData = {}) {
+  return `CLIENT PROFILE
+- Full name: ${clientData.clientName || 'Not provided'}
+- Nationality: ${clientData.nationality || 'Not provided'}
+- Country of residence: ${clientData.residence || clientData.countryOfResidence || 'Not provided'}
+- Occupation: ${clientData.occupation || 'Not provided'}
+- Employer / business name: ${clientData.employer || clientData.businessName || 'Not provided'}
+- Client type: ${clientData.clientType || 'Not provided'}
+- Estimated net worth: ${clientData.estimatedWealth || clientData.netWorth || 'Not provided'}
+- Declared source of wealth: ${clientData.primarySource || clientData.declaredSourceOfWealth || 'Not provided'}
+- Account purpose: ${clientData.purpose || clientData.accountPurpose || 'Not provided'}`
+}
+
+function buildDocumentsSummary(documents = []) {
+  if (!documents.length) {
+    return 'UPLOADED DOCUMENTS\nNo document text provided.'
+  }
+
+  const maxDocChars = 1800
+  const maxCombinedChars = 6000
+  let remainingChars = maxCombinedChars
+
+  return `UPLOADED DOCUMENTS
+${documents.map((doc) => {
+  if (remainingChars <= 0) {
+    return null
+  }
+
+  const rawText = String(doc.text || '').trim() || 'No extractable text found.'
+  const truncatedByDoc = rawText.slice(0, maxDocChars)
+  const snippet = truncatedByDoc.slice(0, remainingChars)
+  remainingChars -= snippet.length
+
+  return `--- ${doc.filename}${doc.category ? ` (${doc.category})` : ''} ---\n${snippet}`
+}).filter(Boolean).join('\n\n')}`
+}
+
+function buildAnalysisPrompt(clientData = {}, documents = []) {
+  return `Analyze the following onboarding case using KYC and AML principles.
+
+${buildClientProfileSummary(clientData)}
+
+${buildDocumentsSummary(documents)}
+
+Return JSON with these top-level sections:
+1. extractedData
+2. mismatches
+3. missingOrInsufficientDocuments
+4. sourceOfWealthDraft
+5. riskFlags
+6. suggestedActions
+
+Also include these compatibility keys for the current frontend:
+- clientOverview
+- primarySource
+- timeline
+- supportingDocs
+- riskSummary
+- recommendations
+
+Formatting requirements:
+- extractedData must be an object whose fields use this shape:
+  {
+    "name": { "value": "...", "sourceDocument": "passport.pdf" },
+    "occupation": { "value": "...", "sourceDocument": "employment_letter.pdf" },
+    "employerOrBusiness": { "value": "...", "sourceDocument": "bank_statement.pdf" },
+    "sourceOfWealthIndicators": { "value": "...", "sourceDocument": "source_of_wealth.pdf" },
+    "ownershipPercentage": { "value": "...", "sourceDocument": "company_registry.pdf" },
+    "incomeIndicators": { "value": "...", "sourceDocument": "bank_statement.pdf" },
+    "countriesInvolved": { "value": ["Singapore"], "sourceDocument": "passport.pdf" },
+    "keyDatesAndAmounts": { "value": ["01 Jan 2026: SGD 250,000"], "sourceDocument": "bank_statement.pdf" }
+  }
+- mismatches should be an array with field, declaredValue, detectedValue, issue, sourceDocument, severity
+- missingOrInsufficientDocuments should identify missing, outdated, weak, or insufficient evidence
+- sourceOfWealthDraft must include primarySourceOfWealth, supportingEvidence, narrativeExplanation, confidence
+- riskFlags should include title, severity, description, rationale
+- suggestedActions should be a concise array of actionable recommendations
+- Only cite values that are supported by the provided text
+- If a field is not evidenced in the documents, set its value to null or an empty array instead of inventing it
+- If evidence is weak, explicitly state uncertainty
+- Do not approve or reject the case`
+}
+
 // Create uploads directory if it doesn't exist
 if (!fs.existsSync('uploads')) {
   fs.mkdirSync('uploads')
 }
 
 // Extract text from uploaded file
+async function runOcrOnImage(filePath) {
+  const result = await Tesseract.recognize(filePath, 'eng')
+  return String(result?.data?.text || '').trim()
+}
+
 async function extractTextFromFile(file) {
   const filePath = file.path
-  const fileExtension = path.extname(filePath).toLowerCase()
+  const fileExtension = path.extname(file.originalname || filePath).toLowerCase()
 
   if (fileExtension === '.pdf') {
     const dataBuffer = fs.readFileSync(filePath)
     const data = await pdfParse(dataBuffer)
-    return data.text
+    const parsedText = String(data.text || '').trim()
+    if (parsedText.length > 0) {
+      return parsedText
+    }
+    return 'No machine-readable text was found in this PDF. OCR is only available for image uploads in the current setup.'
   } else if (fileExtension === '.txt') {
     return fs.readFileSync(filePath, 'utf-8')
+  } else if (['.png', '.jpg', '.jpeg', '.webp', '.bmp', '.tiff', '.tif'].includes(fileExtension)) {
+    const ocrText = await runOcrOnImage(filePath)
+    return ocrText || 'OCR could not detect readable text in this image.'
   } else {
     // For other file types, return a placeholder
     return `Document uploaded: ${file.originalname}\nType: ${file.mimetype}\nSize: ${file.size} bytes`
@@ -61,41 +208,13 @@ app.post('/api/analyze-documents', upload.array('documents'), async (req, res) =
       fs.unlinkSync(file.path)
     }
 
-    // Combine all document texts
-    const combinedText = documentTexts.map(doc => `--- ${doc.filename} ---\n${doc.text}`).join('\n\n')
-
-    // Generate SoW using Groq
-    const prompt = `You are a compliance officer at Bank of Singapore specializing in Source of Wealth (SoW) analysis. 
-
-Analyze the following client information and documents to generate a comprehensive Source of Wealth report.
-
-CLIENT INFORMATION:
-- Name: ${clientData.clientName || 'Not provided'}
-- Client Type: ${clientData.clientType || 'Not provided'}
-- Nationality: ${clientData.nationality || 'Not provided'}
-- Occupation: ${clientData.occupation || 'Not provided'}
-- Estimated Net Worth (SGD): ${clientData.estimatedWealth || 'Not provided'}
-- Primary Source of Wealth: ${clientData.primarySource || 'Not provided'}
-- Risk Profile: ${clientData.riskProfile || 'Not provided'}
-
-DOCUMENTS:
-${combinedText}
-
-Generate a structured Source of Wealth report with the following sections:
-1. Client Overview - Summary of the client profile
-2. Primary Source of Wealth - Analysis of the main wealth source
-3. Wealth Accumulation Timeline - How wealth was accumulated over time
-4. Key Supporting Documents - Summary of key documents reviewed
-5. Risk Assessment Summary - Risk profile and any concerns
-6. Recommendations - Next steps and compliance recommendations
-
-Provide the response in JSON format with these exact keys: clientOverview, primarySource, timeline, supportingDocs, riskSummary, recommendations`
+    const prompt = buildAnalysisPrompt(clientData, documentTexts)
 
     const completion = await groq.chat.completions.create({
       messages: [
         {
           role: "system",
-          content: "You are a compliance officer specializing in Source of Wealth analysis for private banking clients. You provide structured, professional, and regulatory-compliant assessments."
+          content: KYC_AML_SYSTEM_PROMPT
         },
         {
           role: "user",
@@ -104,12 +223,12 @@ Provide the response in JSON format with these exact keys: clientOverview, prima
       ],
       model: "openai/gpt-oss-120b",
       temperature: 0.3,
-      max_tokens: 8192,
+      max_tokens: 3000,
       top_p: 1,
       stream: false
     })
 
-    const sowData = JSON.parse(completion.choices[0].message.content)
+    const sowData = parseJsonResponse(completion.choices[0].message.content)
 
     res.json({
       success: true,
@@ -122,6 +241,84 @@ Provide the response in JSON format with these exact keys: clientOverview, prima
     res.status(500).json({ 
       error: 'Failed to analyze documents',
       details: error.message 
+    })
+  }
+})
+
+app.post('/api/extract-document-text', upload.array('documents'), async (req, res) => {
+  try {
+    if (!req.files || req.files.length === 0) {
+      return res.status(400).json({ error: 'No documents uploaded' })
+    }
+
+    const documents = []
+
+    for (const file of req.files) {
+      const text = await extractTextFromFile(file)
+      documents.push({
+        filename: file.originalname,
+        text,
+        mimeType: file.mimetype,
+        size: file.size,
+      })
+    }
+
+    cleanupUploadedFiles(req.files)
+
+    res.json({
+      success: true,
+      documents,
+    })
+  } catch (error) {
+    console.error('Error extracting document text:', error)
+    cleanupUploadedFiles(req.files)
+    res.status(500).json({
+      error: 'Failed to extract document text',
+      details: error.message,
+    })
+  }
+})
+
+app.post('/api/analyze-case-documents', async (req, res) => {
+  try {
+    const { clientData = {}, documents = [] } = req.body || {}
+
+    if (!Array.isArray(documents) || documents.length === 0) {
+      return res.status(400).json({ error: 'No document data provided' })
+    }
+
+    const prompt = buildAnalysisPrompt(clientData, documents)
+
+    const completion = await groq.chat.completions.create({
+      messages: [
+        {
+          role: 'system',
+          content: KYC_AML_SYSTEM_PROMPT,
+        },
+        {
+          role: 'user',
+          content: prompt,
+        },
+      ],
+      model: 'openai/gpt-oss-120b',
+      temperature: 0.2,
+      max_tokens: 3000,
+      top_p: 1,
+      stream: false,
+    })
+
+    const sowData = parseJsonResponse(completion.choices[0].message.content)
+
+    res.json({
+      success: true,
+      sowData,
+      documentsProcessed: documents.length,
+    })
+  } catch (error) {
+    console.error('Error analyzing stored case documents:', error)
+    res.status(500).json({
+      error: 'Failed to analyze case documents',
+      details: error.message,
     })
   }
 })
@@ -143,34 +340,34 @@ app.post('/api/detect-risks', upload.array('documents'), async (req, res) => {
       documentText = documentTexts.join('\n\n')
     }
 
-    const prompt = `You are a compliance officer at Bank of Singapore specializing in risk assessment for private banking clients.
+    const prompt = `Assess this onboarding case for KYC / AML risk factors.
 
-Analyze the following client information and identify any risk flags or compliance concerns.
-
-CLIENT INFORMATION:
-- Name: ${clientData.clientName || 'Not provided'}
-- Client Type: ${clientData.clientType || 'Not provided'}
+CLIENT PROFILE
+- Full name: ${clientData.clientName || 'Not provided'}
 - Nationality: ${clientData.nationality || 'Not provided'}
+- Country of residence: ${clientData.residence || clientData.countryOfResidence || 'Not provided'}
 - Occupation: ${clientData.occupation || 'Not provided'}
-- Estimated Net Worth (SGD): ${clientData.estimatedWealth || 'Not provided'}
-- Primary Source of Wealth: ${clientData.primarySource || 'Not provided'}
-- Risk Profile: ${clientData.riskProfile || 'Not provided'}
+- Employer / business name: ${clientData.employer || clientData.businessName || 'Not provided'}
+- Client type: ${clientData.clientType || 'Not provided'}
+- Estimated net worth: ${clientData.estimatedWealth || clientData.netWorth || 'Not provided'}
+- Declared source of wealth: ${clientData.primarySource || clientData.declaredSourceOfWealth || 'Not provided'}
+- Account purpose: ${clientData.purpose || clientData.accountPurpose || 'Not provided'}
 
-${documentText ? `DOCUMENT CONTENT:\n${documentText.substring(0, 10000)}` : ''}
+${documentText ? `DOCUMENT CONTENT:\n${documentText.substring(0, 12000)}` : ''}
 
-Identify risk flags with the following information for each:
-- id: unique identifier
-- title: brief title of the risk
-- description: detailed explanation
-- severity: "high", "medium", or "low"
+Return JSON with:
+- riskFlags: array of objects with id, title, description, severity, rationale
+- mismatches: array of objects with field, declaredValue, detectedValue, issue
+- missingOrInsufficientDocuments: array of objects with document, issue, reason
+- suggestedActions: array of strings
 
-Provide the response in JSON format with a "riskFlags" array containing the identified risks. If no risks are identified, return an empty array.`
+Only identify risks supported by the provided profile or document content. If evidence is weak, say so clearly.`
 
     const completion = await groq.chat.completions.create({
       messages: [
         {
           role: "system",
-          content: "You are a compliance officer specializing in risk assessment. You identify potential red flags and compliance concerns in banking relationships."
+          content: KYC_AML_SYSTEM_PROMPT
         },
         {
           role: "user",
@@ -184,11 +381,14 @@ Provide the response in JSON format with a "riskFlags" array containing the iden
       stream: false
     })
 
-    const riskData = JSON.parse(completion.choices[0].message.content)
+    const riskData = parseJsonResponse(completion.choices[0].message.content)
 
     res.json({
       success: true,
-      riskFlags: riskData.riskFlags || []
+      riskFlags: riskData.riskFlags || [],
+      mismatches: riskData.mismatches || [],
+      missingOrInsufficientDocuments: riskData.missingOrInsufficientDocuments || [],
+      suggestedActions: riskData.suggestedActions || [],
     })
 
   } catch (error) {

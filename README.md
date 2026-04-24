@@ -1,249 +1,262 @@
-# SoW Copilot - Private Banking Onboarding
+# WealthFlow SoW
 
-An AI-powered web application that helps Bank of Singapore relationship managers and onboarding teams transform client documents into clean Source of Wealth (SoW) drafts, missing-document checklists, and risk review summaries before compliance review.
+WealthFlow SoW is a banking onboarding workspace for Relationship Managers. It combines case management, document collection, AI-assisted extraction, Source of Wealth drafting, risk review, and audit visibility in a single app.
 
-## Features
+## What It Does
 
-- **Client Intake Form**: Collect comprehensive client information including nationality, occupation, estimated wealth, and risk profile
-- **Document Upload**: Upload and track required documents (passport, payslips, tax returns, bank statements, etc.)
-- **AI-Powered SoW Generation**: Automatically generates structured Source of Wealth reports using Groq AI
-- **Risk Flag Detection**: AI-powered identification of compliance risks and missing information
-- **Compliance Dashboard**: Final review interface with case status, document checklist, and risk assessment
+- Create and manage onboarding cases with human-readable case IDs like `WF-20260424-0001`
+- Store case data in Firebase Firestore
+- Store uploaded source documents in Firebase Storage
+- Extract text from uploaded documents for later AI analysis
+- Run Groq-powered KYC/AML analysis on stored case documents
+- Generate AI insights:
+  - extracted data
+  - mismatches
+  - missing / weak evidence
+  - Source of Wealth draft
+  - risk flags
+  - suggested actions
+- Track readiness, risk, and audit activity in the RM dashboard and case detail workspace
+
+## Current Document Extraction Behavior
+
+- Text-based PDFs: extracted with `pdf-parse`
+- TXT files: read directly
+- Image files (`png`, `jpg`, `jpeg`, `webp`, `bmp`, `tiff`): OCR with `tesseract.js`
+- Scanned image-only PDFs: not fully OCR-enabled yet
+
+If a document has no machine-readable text, AI extraction may return blank values instead of guessing.
 
 ## Tech Stack
 
 ### Frontend
-- React 18 with Vite
-- TailwindCSS for styling
-- Lucide React for icons
-- Custom UI components (Card, Button, Input, Label)
+
+- React 18
+- Vite
+- Tailwind CSS
+- Lucide React
 
 ### Backend
-- Express.js server
-- Groq AI for document analysis and SoW generation
-- Multer for file uploads
-- PDF-parse for document text extraction
-- CORS for cross-origin requests
 
-## Setup Instructions
+- Express
+- Multer
+- Groq SDK
+- pdf-parse
+- tesseract.js
 
-### Prerequisites
-- Node.js 18+ installed
-- Groq API key (get one at https://console.groq.com/keys)
+### Data / Storage
 
-### Installation
+- Firebase Firestore for case records
+- Firebase Storage for original uploaded files
 
-1. Clone the repository and navigate to the project directory:
-```bash
-cd dealornodeal
+## Environment Variables
+
+Copy `.env.example` to `.env` and fill in all required values.
+
+```env
+GROQ_API_KEY=your_groq_api_key
+PORT=3001
+
+VITE_FIREBASE_API_KEY=your_firebase_api_key
+VITE_FIREBASE_AUTH_DOMAIN=your-project-id.firebaseapp.com
+VITE_FIREBASE_PROJECT_ID=your-project-id
+VITE_FIREBASE_STORAGE_BUCKET=your-project-id.appspot.com
+VITE_FIREBASE_MESSAGING_SENDER_ID=1234567890
+VITE_FIREBASE_APP_ID=1:1234567890:web:abcdef123456
 ```
 
-2. Install dependencies:
+## Firebase Setup
+
+### 1. Firestore
+
+- Create a Firebase project
+- Enable Firestore Database
+- Add a Web App in Firebase project settings
+- copy the Firebase config values into `.env`
+
+### 2. Storage
+
+- Enable Firebase Storage
+- Make sure your `VITE_FIREBASE_STORAGE_BUCKET` is correct
+- Add Storage rules appropriate for your environment
+
+For local testing, you can start with permissive temporary rules and tighten them later.
+
+## Install
+
 ```bash
 npm install
 ```
 
-3. Configure environment variables:
-```bash
-cp .env.example .env
-```
+## Run
 
-Edit `.env` and add your Groq API key:
-```
-GROQ_API_KEY=gsk-your-actual-api-key-here
-PORT=3001
-```
+Start both servers.
 
-### Running the Application
+### Backend
 
-You need to run both the frontend and backend servers:
-
-**Terminal 1 - Backend Server:**
 ```bash
 npm run server
 ```
-The backend will run on http://localhost:3001
 
-**Terminal 2 - Frontend Server:**
+Backend runs on:
+
+`http://localhost:3001`
+
+### Frontend
+
 ```bash
 npm run dev
 ```
-The frontend will run on http://localhost:3000
 
-### Usage
+Open the URL printed by Vite in the terminal, typically:
 
-1. Open http://localhost:3000 in your browser
-2. Fill out the Client Intake Form with client information
-3. Upload required documents (PDF, TXT, or other formats)
-4. The AI will automatically generate a Source of Wealth draft
-5. Review and edit the SoW draft if needed
-6. View AI-detected risk flags and missing documents
-7. Proceed to the Compliance Dashboard for final review
+`http://localhost:5173`
 
-## API Endpoints
+## Important Restart Rule
 
-### POST /api/analyze-documents
-Analyzes uploaded documents and generates SoW draft using AI.
+Whenever you change:
 
-**Request:** multipart/form-data
-- `documents`: Array of uploaded files
-- `clientData`: JSON string with client information
+- `.env`
+- `server.js`
+- Firebase config
+- Groq configuration
 
-**Response:** 
-```json
-{
-  "success": true,
-  "sowData": {
-    "clientOverview": "...",
-    "primarySource": "...",
-    "timeline": "...",
-    "supportingDocs": "...",
-    "riskSummary": "...",
-    "recommendations": "..."
-  },
-  "documentsProcessed": 5
-}
+restart the backend server.
+
+If you changed frontend config or env values, restart the frontend too.
+
+## AI Analysis Flow
+
+The current workflow is:
+
+1. Upload document in Case Detail or Vault
+2. Original file is stored in Firebase Storage
+3. Extracted text is stored with the case document record
+4. Click `Run AI Analysis`
+5. Backend sends stored document text plus client profile to Groq
+6. Case detail page renders:
+   - extracted data
+   - mismatches
+   - SoW draft
+   - risk flags
+   - suggested actions
+
+### Important
+
+Old documents uploaded before extraction/storage changes may not have:
+
+- `storagePath`
+- `downloadURL`
+- `extractedText`
+
+If AI analysis does not work for an older case, remove those old documents and upload them again once.
+
+## Supported AI Endpoints
+
+### `POST /api/extract-document-text`
+
+Extracts text from uploaded files for storage with the case.
+
+### `POST /api/analyze-case-documents`
+
+Runs Groq analysis against already stored case document text.
+
+### `POST /api/analyze-documents`
+
+Legacy upload-and-analyze route. Still available.
+
+### `POST /api/detect-risks`
+
+Returns risk flags, mismatches, missing evidence, and suggested actions.
+
+## Readiness and Risk Logic
+
+The case detail page now uses both workflow completeness and AI results.
+
+### Readiness considers
+
+- required document coverage
+- required case/profile fields
+- SoW narrative completion
+- AI mismatch penalties
+- AI risk severity penalties
+
+### Risk Level considers
+
+- AI mismatch severity
+- AI risk flag severity
+- missing required documents
+- overall readiness condition
+
+This means a case can no longer stay `100%` readiness with `Low` risk if major AI mismatches are present.
+
+## Project Structure
+
+```text
+src/
+  components/
+  lib/
+    api.js
+    caseFiles.js
+    firebase.js
+    firebaseCases.js
+  screens/
+    CaseDetail.jsx
+    RMDashboard.jsx
+    Vault.jsx
+server.js
+package.json
+README.md
 ```
 
-### POST /api/detect-risks
-Detects risk flags using AI analysis.
+## Common Issues
 
-**Request:** multipart/form-data
-- `documents`: Array of uploaded files
-- `clientData`: JSON string with client information
+### AI analysis failed
 
-**Response:**
-```json
-{
-  "success": true,
-  "riskFlags": [
-    {
-      "id": "missing_tax",
-      "title": "Missing Tax Returns",
-      "description": "...",
-      "severity": "high"
-    }
-  ]
-}
+Check:
+
+- backend is running
+- `GROQ_API_KEY` is set
+- backend was restarted after changes
+- uploaded documents actually have extracted text
+
+### Extracted fields show `--`
+
+Usually means:
+
+- the file had no readable text
+- the document is scanned and OCR did not apply
+- the AI found no reliable evidence and correctly avoided guessing
+
+### Storage upload fails
+
+Check:
+
+- Firebase Storage is enabled
+- storage bucket env value is correct
+- Storage rules allow the operation
+
+### Route returns 404
+
+Your backend is likely stale. Restart `npm run server`.
+
+## Notes
+
+- The backend trims document text before sending it to Groq to stay within token limits.
+- OCR currently supports image files, not full scanned-PDF OCR conversion.
+- Some older demo logic still exists as fallback when no live AI analysis is present.
+
+## Verification
+
+Frontend build:
+
+```bash
+npm run build
 ```
 
-### POST /api/check-missing-docs
-Checks which required documents are missing.
+## Security
 
-**Request:** JSON body
-- `uploadedDocs`: Object with uploaded document IDs
-
-**Response:**
-```json
-{
-  "success": true,
-  "missingDocs": [
-    {
-      "id": "passport",
-      "name": "Passport / ID Document",
-      "required": true,
-      "reason": "Required for KYC and Source of Wealth verification"
-    }
-  ]
-}
-```
-
-## Document Types Supported
-
-- PDF files (text extraction via pdf-parse)
-- TXT files
-- Other file types (metadata only)
-
-## Required Documents
-
-1. Passport / ID Document (Required)
-2. Recent Payslips - 3 months (Required)
-3. Tax Returns - 2 years (Required)
-4. Bank Statements - 6 months (Required)
-5. Bank Reference Letter (Required)
-6. CV / Resume (Required)
-7. Business Registration / Ownership (Optional)
-8. Investment Portfolio Statement (Optional)
-9. Property Ownership Documents (Optional)
-10. Inheritance / Gift Documents (Optional)
-
-## Case Status
-
-The system automatically determines case status based on:
-- Number of required documents uploaded (minimum 70% required)
-- Severity of detected risk flags
-
-**Status Levels:**
-- **Ready for Review**: All required documents uploaded, no critical risk flags
-- **Needs Review**: Some documents missing or medium-severity flags detected
-- **Need More Documents**: Critical documents missing or high-severity flags detected
-
-## AI Model
-
-The application uses Groq AI (openai/gpt-oss-120b) for:
-- Document analysis and text understanding
-- Source of Wealth report generation
-- Risk flag detection
-- Compliance recommendations
-
-The AI is configured with:
-- Temperature: 0.2-0.3 for consistent, professional outputs
-- Max tokens: 8192 for comprehensive responses
-- System prompts for compliance officer persona
-
-## Development
-
-### Project Structure
-```
-dealornodeal/
-├── src/
-│   ├── components/ui/     # Reusable UI components
-│   ├── lib/               # Utilities and API client
-│   ├── screens/           # Page components
-│   ├── App.jsx            # Main app component
-│   ├── main.jsx           # Entry point
-│   └── index.css          # Global styles
-├── server.js              # Backend API server
-├── package.json           # Dependencies
-├── vite.config.js         # Vite configuration
-└── tailwind.config.js     # Tailwind configuration
-```
-
-### Adding New Features
-
-1. **New Screen**: Create component in `src/screens/` and add to `App.jsx`
-2. **New API Endpoint**: Add route to `server.js`
-3. **New UI Component**: Create in `src/components/ui/`
-
-## Troubleshooting
-
-**AI not responding:**
-- Check that GROQ_API_KEY is set in `.env`
-- Verify your Groq API key is valid
-- Check backend server is running on port 3001
-
-**Document upload failing:**
-- Ensure file size is reasonable (< 10MB)
-- Check that uploads directory exists
-- Verify CORS is configured correctly
-
-**Frontend not connecting to backend:**
-- Ensure backend server is running
-- Check API_BASE_URL in `src/lib/api.js`
-- Verify no firewall blocking port 3001
-
-## Security Notes
-
-- Never commit `.env` file with real API keys
-- Use environment variables for all sensitive configuration
-- Implement proper authentication for production deployment
-- Add rate limiting for API endpoints in production
-- Validate all file uploads on the backend
-
-## License
-
-This is a demonstration project for the SoW Copilot concept.
-
-## Support
-
-For issues or questions, please refer to the project documentation or contact the development team.
+- Do not commit real API keys
+- Do not use permissive Firebase rules in production
+- Add authentication and authorization before production use
+- Review document and AI outputs before using them for real compliance decisions

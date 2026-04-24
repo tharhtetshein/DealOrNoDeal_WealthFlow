@@ -1,53 +1,44 @@
 import { 
   LayoutDashboard, 
-  ShieldCheck, 
-  Zap, 
-  Scale, 
-  FolderKanban, 
-  FileText, 
-  History,
-  Plus,
-  HelpCircle,
+  FolderKanban,
+  FileText,
+  ClipboardList,
   LogOut,
   Building2
 } from 'lucide-react'
 
-const navItems = [
+const defaultNavItems = [
   { id: 'dashboard', label: 'Dashboard', icon: LayoutDashboard },
-  { id: 'verification', label: 'Verification', icon: ShieldCheck },
-  { id: 'automation', label: 'Automation', icon: Zap },
-  { id: 'regulatory', label: 'Regulatory Intel', icon: Scale },
   { id: 'cases', label: 'Case Files', icon: FolderKanban },
   { id: 'documents', label: 'Documents', icon: FileText },
-  { id: 'audit', label: 'Audit Trail', icon: History },
+  { id: 'audit', label: 'System Audit Log', icon: ClipboardList },
 ]
 
-export default function Sidebar({ activeItem = 'dashboard', onNavigate }) {
+const rmNavItems = [
+  { id: 'dashboard', label: 'Dashboard', icon: LayoutDashboard },
+  { id: 'audit', label: 'System Audit Log', icon: ClipboardList },
+]
+
+export default function Sidebar({ activeItem = 'dashboard', onNavigate, role = 'ops' }) {
+  const navItems = role === 'rm' ? rmNavItems : defaultNavItems
+
   return (
     <aside className="w-64 h-screen bg-surface-container-low flex flex-col fixed left-0 top-0 z-40">
       {/* Logo */}
-      <div className="p-6 pb-4">
+      <button
+        onClick={() => window.location.reload()}
+        className="p-6 pb-4 hover:opacity-80 transition-opacity cursor-pointer"
+      >
         <div className="flex items-center gap-3">
           <div className="w-10 h-10 rounded-lg gradient-primary flex items-center justify-center">
             <Building2 className="w-5 h-5 text-white" />
           </div>
-          <div>
+          <div className="text-left">
             <h1 className="font-display font-bold text-lg text-on-surface leading-tight">WEALTHFLOW</h1>
             <p className="text-[10px] text-on-surface-variant tracking-widest uppercase">Crimson Reserve</p>
           </div>
         </div>
-      </div>
-
-      {/* New Case Button */}
-      <div className="px-4 mb-6">
-        <button 
-          onClick={() => onNavigate('new-case')}
-          className="w-full py-3 px-4 rounded-lg gradient-primary text-white font-medium text-sm flex items-center justify-center gap-2 hover:opacity-90 transition-opacity shadow-ambient"
-        >
-          <Plus className="w-4 h-4" />
-          New Case File
-        </button>
-      </div>
+      </button>
 
       {/* Navigation */}
       <nav className="flex-1 px-3">
@@ -75,14 +66,7 @@ export default function Sidebar({ activeItem = 'dashboard', onNavigate }) {
       {/* Bottom Section */}
       <div className="p-4 border-t border-outline/10">
         <button 
-          onClick={() => onNavigate('support')}
-          className="w-full flex items-center gap-3 px-4 py-3 rounded-lg text-sm font-medium text-on-surface-variant hover:bg-surface-container transition-colors mb-1"
-        >
-          <HelpCircle className="w-4 h-4" />
-          Support
-        </button>
-        <button 
-          onClick={() => onNavigate('logout')}
+          onClick={() => onNavigate('role-selection')}
           className="w-full flex items-center gap-3 px-4 py-3 rounded-lg text-sm font-medium text-on-surface-variant hover:bg-surface-container transition-colors"
         >
           <LogOut className="w-4 h-4" />

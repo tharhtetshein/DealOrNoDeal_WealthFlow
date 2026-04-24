@@ -1,5 +1,42 @@
 const API_BASE_URL = 'http://localhost:3001/api'
 
+export async function extractDocumentText(files) {
+  const formData = new FormData()
+
+  Array.from(files || []).forEach((file) => {
+    if (file instanceof File) {
+      formData.append('documents', file)
+    }
+  })
+
+  const response = await fetch(`${API_BASE_URL}/extract-document-text`, {
+    method: 'POST',
+    body: formData,
+  })
+
+  if (!response.ok) {
+    throw new Error('Failed to extract document text')
+  }
+
+  return response.json()
+}
+
+export async function analyzeCaseDocuments(clientData, documents) {
+  const response = await fetch(`${API_BASE_URL}/analyze-case-documents`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({ clientData, documents }),
+  })
+
+  if (!response.ok) {
+    throw new Error('Failed to analyze case documents')
+  }
+
+  return response.json()
+}
+
 export async function analyzeDocuments(clientData, documents) {
   const formData = new FormData()
   formData.append('clientData', JSON.stringify(clientData))

@@ -1,9 +1,7 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { 
   User, 
   Briefcase, 
-  Shield, 
-  Sparkles,
   Trash2,
   Save,
   ArrowRight,
@@ -14,48 +12,149 @@ import {
   FileText,
   AlertTriangle,
   CheckCircle2,
-  Building,
-  Loader2
+  Building
 } from 'lucide-react'
-import { analyzeDocuments, detectRisks } from '../lib/api'
+import { clearActiveCaseId, createDraftCase, getActiveCaseId, getCaseFileById, setActiveCaseId, updateCaseCore } from '../lib/caseFiles'
 
-export default function NewCase({ onNext, setClientData, setSowData }) {
-  const [formData, setFormData] = useState({
-    clientName: '',
-    nationality: '',
-    residence: '',
-    occupation: '',
-    netWorth: '',
-    purpose: ''
-  })
-  const [loading, setLoading] = useState(false)
+const emptyFormData = {
+  clientName: '',
+  nationality: '',
+  residence: '',
+  occupation: '',
+  netWorth: '',
+  purpose: '',
+}
+
+export default function NewCase({ onNext, setClientData, setSowData, onNavigate }) {
+  const [formData, setFormData] = useState(emptyFormData)
   const [aiInsight, setAiInsight] = useState(null)
+  const [netWorthError, setNetWorthError] = useState('')
+  const [submissionMessage, setSubmissionMessage] = useState('')
+  const [loadingCase, setLoadingCase] = useState(true)
+  const minimumNetWorth = 3000000
+
+  useEffect(() => {
+    let isMounted = true
+
+    const loadActiveCase = async () => {
+      const activeCaseId = getActiveCaseId()
+      if (!activeCaseId) {
+        if (isMounted) {
+          setFormData(emptyFormData)
+          setLoadingCase(false)
+        }
+        return
+      }
+
+      const activeCase = await getCaseFileById(activeCaseId)
+      if (!isMounted) return
+
+      if (activeCase) {
+        const netWorthDigits = String(activeCase.netWorth || '').replace(/[^\d]/g, '')
+        setFormData({
+          clientName: activeCase.clientName || '',
+          nationality: activeCase.nationality || '',
+          residence: activeCase.residence || '',
+          occupation: activeCase.occupation || '',
+          netWorth: netWorthDigits ? Number(netWorthDigits).toLocaleString('en-US') : '',
+          purpose: activeCase.purpose || '',
+        })
+      } else {
+        setFormData(emptyFormData)
+      }
+
+      setLoadingCase(false)
+    }
+
+    loadActiveCase()
+
+    return () => {
+      isMounted = false
+    }
+  }, [])
+
+  const saveCaseDraft = async (nextFormData) => {
+    const normalizedFormData = {
+      ...nextFormData,
+      netWorth: String(nextFormData.netWorth || '').replace(/,/g, ''),
+      estimatedWealth: String(nextFormData.netWorth || '').replace(/,/g, ''),
+    }
+
+    const activeCaseId = getActiveCaseId()
+    const activeCase = activeCaseId ? await getCaseFileById(activeCaseId) : null
+
+    let caseFile
+    if (activeCase) {
+      caseFile = await updateCaseCore(activeCase.id, normalizedFormData)
+    } else {
+      caseFile = await createDraftCase(normalizedFormData)
+    }
+
+    if (caseFile?.id) {
+      setActiveCaseId(caseFile.id)
+    }
+
+    return caseFile
+  }
 
   const handleInputChange = (field, value) => {
-    setFormData(prev => ({ ...prev, [field]: value }))
+    if (field === 'netWorth') {
+      const digitsOnly = value.replace(/[^\d]/g, '')
+      const formattedValue = digitsOnly ? Number(digitsOnly).toLocaleString('en-US') : ''
+      if (digitsOnly && Number(digitsOnly) < minimumNetWorth) {
+        setNetWorthError('Minimum net worth is 3,000,000.')
+      } else {
+        setNetWorthError('')
+      }
+      setFormData((prev) => {
+        return { ...prev, [field]: formattedValue }
+      })
+      return
+    }
+
+    setFormData((prev) => {
+      return { ...prev, [field]: value }
+    })
+  }
+
+  const handleSaveForLater = async () => {
+    await saveCaseDraft(formData)
+    setSubmissionMessage('Draft saved. You can continue later from Case Files.')
+    onNavigate?.('cases')
+  }
+
+  const handleDiscard = () => {
+    setFormData(emptyFormData)
+    setAiInsight(null)
+    setNetWorthError('')
+    setSubmissionMessage('')
+    clearActiveCaseId()
   }
 
   const handleSubmit = async () => {
-    setLoading(true)
-    try {
-      // Call AI to analyze and generate SoW
-      const result = await analyzeDocuments(formData, {})
-      setSowData(result.sowData)
-      setClientData(formData)
-      
-      // Get risk assessment
-      const riskResult = await detectRisks(formData, {})
-      setAiInsight({
-        risk: riskResult.riskFlags?.length > 0 ? 'Medium' : 'Low',
-        flags: riskResult.riskFlags || []
-      })
-      
-      onNext?.()
-    } catch (error) {
-      console.error('Error creating case:', error)
-    } finally {
-      setLoading(false)
+    const netWorthValue = Number(formData.netWorth.replace(/,/g, '') || 0)
+    if (netWorthValue < minimumNetWorth) {
+      setNetWorthError('Minimum net worth is 3,000,000.')
+      return
     }
+
+    const normalizedFormData = {
+      ...formData,
+      netWorth: formData.netWorth.replace(/,/g, ''),
+      estimatedWealth: formData.netWorth.replace(/,/g, ''),
+    }
+
+    const caseFile = await saveCaseDraft(normalizedFormData)
+
+    if (caseFile?.id) {
+      setActiveCaseId(caseFile.id)
+    }
+
+    setClientData(normalizedFormData)
+    setSowData(null)
+    setAiInsight(null)
+    setSubmissionMessage('Case created as Draft. Upload documents in Documents to continue.')
+    onNavigate?.('cases')
   }
 
   return (
@@ -90,6 +189,7 @@ export default function NewCase({ onNext, setClientData, setSowData }) {
                   value={formData.clientName}
                   onChange={(e) => handleInputChange('clientName', e.target.value)}
                   placeholder="e.g. Alexander Sterling"
+                  disabled={loadingCase}
                   className="w-full px-4 py-3 bg-surface-container rounded-lg text-sm text-on-surface placeholder:text-on-surface-variant/50 focus:outline-none focus:ring-2 focus:ring-primary/20 border border-transparent focus:border-primary/30 transition-all"
                 />
               </div>
@@ -104,6 +204,7 @@ export default function NewCase({ onNext, setClientData, setSowData }) {
                     <select 
                       value={formData.nationality}
                       onChange={(e) => handleInputChange('nationality', e.target.value)}
+                      disabled={loadingCase}
                       className="w-full px-4 py-3 bg-surface-container rounded-lg text-sm text-on-surface appearance-none focus:outline-none focus:ring-2 focus:ring-primary/20 border border-transparent focus:border-primary/30 transition-all">
                       <option value="">Select Country</option>
                       <option value="Switzerland">Switzerland</option>
@@ -125,6 +226,7 @@ export default function NewCase({ onNext, setClientData, setSowData }) {
                       value={formData.residence}
                       onChange={(e) => handleInputChange('residence', e.target.value)}
                       placeholder="e.g. Zurich, Switzerland"
+                      disabled={loadingCase}
                       className="w-full pl-11 pr-4 py-3 bg-surface-container rounded-lg text-sm text-on-surface placeholder:text-on-surface-variant/50 focus:outline-none focus:ring-2 focus:ring-primary/20 border border-transparent focus:border-primary/30 transition-all"
                     />
                   </div>
@@ -153,6 +255,7 @@ export default function NewCase({ onNext, setClientData, setSowData }) {
                   value={formData.occupation}
                   onChange={(e) => handleInputChange('occupation', e.target.value)}
                   placeholder="e.g. Tech Executive / Founder"
+                  disabled={loadingCase}
                   className="w-full px-4 py-3 bg-surface-container rounded-lg text-sm text-on-surface placeholder:text-on-surface-variant/50 focus:outline-none focus:ring-2 focus:ring-primary/20 border border-transparent focus:border-primary/30 transition-all"
                 />
               </div>
@@ -169,9 +272,13 @@ export default function NewCase({ onNext, setClientData, setSowData }) {
                     value={formData.netWorth}
                     onChange={(e) => handleInputChange('netWorth', e.target.value)}
                     placeholder="0.00"
-                    className="w-full pl-11 pr-4 py-3 bg-surface-container rounded-lg text-sm text-on-surface placeholder:text-on-surface-variant/50 focus:outline-none focus:ring-2 focus:ring-primary/20 border border-transparent focus:border-primary/30 transition-all"
+                    disabled={loadingCase}
+                    className={`w-full pl-11 pr-4 py-3 bg-surface-container rounded-lg text-sm text-on-surface placeholder:text-on-surface-variant/50 focus:outline-none focus:ring-2 focus:ring-primary/20 border transition-all ${
+                      netWorthError ? 'border-error/50 focus:border-error/50' : 'border-transparent focus:border-primary/30'
+                    }`}
                   />
                 </div>
+                  {netWorthError && <p className="mt-2 text-xs text-error">{netWorthError}</p>}
               </div>
             </div>
             
@@ -185,40 +292,43 @@ export default function NewCase({ onNext, setClientData, setSowData }) {
                 onChange={(e) => handleInputChange('purpose', e.target.value)}
                 placeholder="Describe the intended use for this private vault..."
                 rows={4}
+                disabled={loadingCase}
                 className="w-full px-4 py-3 bg-surface-container rounded-lg text-sm text-on-surface placeholder:text-on-surface-variant/50 focus:outline-none focus:ring-2 focus:ring-primary/20 border border-transparent focus:border-primary/30 transition-all resize-none"
               />
             </div>
+
+            {submissionMessage && (
+              <p className="mt-4 text-xs text-tertiary">{submissionMessage}</p>
+            )}
           </div>
           
           {/* Action Buttons */}
           <div className="flex items-center justify-end gap-3 pt-4">
             <button 
-              onClick={() => setFormData({})}
+              onClick={handleDiscard}
+              disabled={loadingCase}
               className="px-5 py-3 rounded-lg text-sm font-medium text-on-surface-variant hover:bg-surface-container transition-colors flex items-center gap-2"
             >
               <Trash2 className="w-4 h-4" />
               Discard Draft
             </button>
-            <button className="px-5 py-3 rounded-lg bg-surface-container text-sm font-medium text-on-surface hover:bg-surface-container-high transition-colors flex items-center gap-2">
+            <button
+              onClick={handleSaveForLater}
+              disabled={loadingCase}
+              className="px-5 py-3 rounded-lg bg-surface-container text-sm font-medium text-on-surface hover:bg-surface-container-high transition-colors flex items-center gap-2"
+            >
               <Save className="w-4 h-4" />
               Save for Later
             </button>
             <button 
               onClick={handleSubmit}
-              disabled={loading || !formData.clientName}
+              disabled={loadingCase || !formData.clientName || !!netWorthError}
               className="px-6 py-3 rounded-lg gradient-primary text-white text-sm font-medium hover:opacity-90 transition-opacity flex items-center gap-2 shadow-ambient disabled:opacity-50 disabled:cursor-not-allowed"
             >
-              {loading ? (
-                <>
-                  <Loader2 className="w-4 h-4 animate-spin" />
-                  Analyzing...
-                </>
-              ) : (
-                <>
-                  Review & Submit
-                  <ArrowRight className="w-4 h-4" />
-                </>
-              )}
+              <>
+                Create Case Draft
+                <ArrowRight className="w-4 h-4" />
+              </>
             </button>
           </div>
         </div>

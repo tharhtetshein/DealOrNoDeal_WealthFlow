@@ -1,361 +1,341 @@
-import { useState, useCallback } from 'react'
-import { 
-  CheckCircle2, 
-  ChevronRight, 
-  Upload, 
-  FileText, 
+import { useEffect, useMemo, useState } from 'react'
+import {
+  CheckCircle2,
+  Upload,
+  FileText,
   AlertCircle,
-  MoreHorizontal,
-  RefreshCw,
-  Filter,
-  ChevronLeft,
-  ChevronRight as ChevronRightIcon,
   Shield,
-  ArrowRight,
-  Loader2
+  Loader2,
+  Send,
+  Trash2,
 } from 'lucide-react'
-import { analyzeDocuments, checkMissingDocs } from '../lib/api'
+import {
+  addDocumentToCase,
+  getActiveCaseId,
+  getCaseFileById,
+  getRequiredDocumentCategories,
+  hasRequiredDocuments,
+  markReadyForReview,
+  removeDocumentFromCase,
+} from '../lib/caseFiles'
+import { extractDocumentText } from '../lib/api'
+import { hasFirebaseConfig, uploadCaseDocumentFile } from '../lib/firebase'
 
-const categories = [
-  { id: 'passport', name: 'Passport / ID', status: 'complete', count: 1 },
-  { id: 'bank', name: 'Bank Statements', status: 'complete', count: 2 },
-  { id: 'sow', name: 'Source of Wealth (SoW)', status: 'required', count: 0 },
-  { id: 'utility', name: 'Utility Bill', status: 'complete', count: 1 },
-  { id: 'tax', name: 'Tax Residency Certificate', status: 'optional', count: 0 },
+const allCategories = [
+  'Passport / ID',
+  'Bank Statements',
+  'Source of Wealth (SoW)',
+  'Utility Bill',
+  'Tax Residency Bill',
 ]
 
-const documents = [
-  { 
-    name: 'A_Sterling_Passport_2024.pdf', 
-    size: '3.2 MB', 
-    category: 'Identity', 
-    uploaded: 'Oct 12, 2023', 
-    status: 'uploaded',
-    type: 'pdf'
-  },
-  { 
-    name: 'Property_Deed_Scan.jpg', 
-    size: '12.5 MB', 
-    category: 'SoW', 
-    uploaded: 'Oct 14, 2023', 
-    status: 'mismatch',
-    type: 'image'
-  },
-  { 
-    name: 'Q3_HSBC_Statement.pdf', 
-    size: '1.8 MB', 
-    category: 'Banking', 
-    uploaded: 'Oct 15, 2023', 
-    status: 'uploaded',
-    type: 'pdf'
-  },
-  { 
-    name: 'Missing Document...', 
-    size: 'Tax Certification', 
-    category: 'Tax', 
-    uploaded: '--', 
-    status: 'missing',
-    type: 'missing'
-  },
-]
-
-const statusConfig = {
-  uploaded: { icon: CheckCircle2, color: 'text-success', bg: 'bg-success/10', label: 'UPLOADED' },
-  mismatch: { icon: AlertCircle, color: 'text-error', bg: 'bg-error/10', label: 'MISMATCH' },
-  missing: { icon: AlertCircle, color: 'text-error', bg: 'bg-error', label: 'MISSING' },
-  processing: { icon: Loader2, color: 'text-tertiary', bg: 'bg-tertiary/10', label: 'PROCESSING' },
+function getCategoryOptionLabel(category, documents = []) {
+  const isUploaded = documents.some((document) => document.category === category)
+  return `${category} — ${isUploaded ? 'Uploaded' : 'Not Uploaded'}`
 }
 
-export default function Vault({ clientData }) {
-  const [uploadedFiles, setUploadedFiles] = useState([])
+export default function Vault({ onNavigate }) {
+  const [activeCase, setActiveCase] = useState(null)
   const [uploading, setUploading] = useState(false)
-  const [completenessScore, setCompletenessScore] = useState(75)
-  const [dragActive, setDragActive] = useState(false)
+  const [message, setMessage] = useState('')
+  const [selectedCategory, setSelectedCategory] = useState(allCategories[0])
+  const [loadingCase, setLoadingCase] = useState(true)
 
-  const handleDrag = useCallback((e) => {
-    e.preventDefault()
-    e.stopPropagation()
-    if (e.type === 'dragenter' || e.type === 'dragover') {
-      setDragActive(true)
-    } else if (e.type === 'dragleave') {
-      setDragActive(false)
-    }
-  }, [])
+  const requiredCategories = getRequiredDocumentCategories()
 
-  const handleDrop = useCallback(async (e) => {
-    e.preventDefault()
-    e.stopPropagation()
-    setDragActive(false)
-    
-    const files = Array.from(e.dataTransfer.files)
-    await processFiles(files)
-  }, [])
+  const completeness = useMemo(() => {
+    if (!activeCase) return 0
+    const present = new Set((activeCase.documents || []).map((doc) => doc.category))
+    const completed = requiredCategories.filter((category) => present.has(category)).length
+    return Math.round((completed / requiredCategories.length) * 100)
+  }, [activeCase, requiredCategories])
 
-  const handleFileInput = async (e) => {
-    const files = Array.from(e.target.files)
-    await processFiles(files)
+  const refreshActiveCase = async () => {
+    const caseId = getActiveCaseId()
+    const nextCase = caseId ? await getCaseFileById(caseId) : null
+    setActiveCase(nextCase)
+    setLoadingCase(false)
   }
+
+  useEffect(() => {
+    refreshActiveCase()
+  }, [])
 
   const processFiles = async (files) => {
-    setUploading(true)
-    
-    const newFiles = files.map(file => ({
-      name: file.name,
-      size: `${(file.size / 1024 / 1024).toFixed(1)} MB`,
-      category: 'Processing...',
-      uploaded: new Date().toLocaleDateString(),
-      status: 'processing',
-      type: file.type.includes('pdf') ? 'pdf' : 'image',
-      file: file
-    }))
-    
-    setUploadedFiles(prev => [...newFiles, ...prev])
-    
-    try {
-      // Upload and analyze with AI
-      const result = await analyzeDocuments(clientData || {}, files)
-      
-      // Update files with analysis results
-      setUploadedFiles(prev => prev.map(f => {
-        const analyzed = newFiles.find(nf => nf.name === f.name)
-        if (analyzed) {
-          return {
-            ...f,
-            status: 'uploaded',
-            category: result.documentsProcessed ? 'Verified' : 'Pending Review'
-          }
-        }
-        return f
-      }))
-      
-      // Update completeness score
-      const checkResult = await checkMissingDocs({})
-      const completed = checkResult.missingDocs ? (8 - checkResult.missingDocs.length) : 6
-      setCompletenessScore(Math.round((completed / 8) * 100))
-      
-    } catch (error) {
-      console.error('Upload error:', error)
-      setUploadedFiles(prev => prev.map(f => 
-        newFiles.find(nf => nf.name === f.name) ? { ...f, status: 'mismatch' } : f
-      ))
-    } finally {
-      setUploading(false)
+    if (!activeCase) {
+      setMessage('Select a case from Case Files before uploading documents.')
+      return
     }
+
+    if (!files.length) {
+      return
+    }
+
+    setUploading(true)
+
+    let extractedDocuments = []
+    try {
+      const extractionResult = await extractDocumentText(files)
+      extractedDocuments = extractionResult.documents || []
+    } catch (error) {
+      console.warn('Unable to extract document text during upload:', error)
+    }
+
+    for (const [index, file] of files.entries()) {
+      const extracted = extractedDocuments[index] || {}
+      const documentId = `${file.name}-${file.size}-${file.lastModified}`
+      let storageMeta = {}
+
+      if (hasFirebaseConfig) {
+        try {
+          storageMeta = await uploadCaseDocumentFile(activeCase.id, documentId, file)
+        } catch (error) {
+          console.error('Error uploading document to Firebase Storage:', error)
+          setUploading(false)
+          setMessage(`Unable to upload ${file.name} to Firebase Storage. Check your Firebase Storage setup.`)
+          return
+        }
+      }
+
+      await addDocumentToCase(activeCase.id, {
+        id: documentId,
+        name: file.name,
+        size: `${(file.size / 1024 / 1024).toFixed(1)} MB`,
+        category: selectedCategory,
+        uploader: 'RM Uploaded',
+        extractedText: extracted.text || '',
+        mimeType: extracted.mimeType || file.type || '',
+        storagePath: storageMeta.storagePath || null,
+        downloadURL: storageMeta.downloadURL || null,
+        uploadedAt: new Date().toISOString(),
+      })
+    }
+
+    await refreshActiveCase()
+    setUploading(false)
+    setMessage('Document uploaded. Case status updated based on completeness.')
   }
+
+  const handleFileInput = async (e) => {
+    const files = Array.from(e.target.files || [])
+    await processFiles(files)
+    e.target.value = ''
+  }
+
+  const handleSubmitForReview = async () => {
+    if (!activeCase) {
+      setMessage('Select a case from Case Files first.')
+      return
+    }
+
+    if (!hasRequiredDocuments(activeCase)) {
+      setMessage('Required documents are incomplete. Redirecting to Case Files.')
+      onNavigate?.('cases')
+      return
+    }
+
+    const result = await markReadyForReview(activeCase.id)
+    if (!result.ok) {
+      setMessage(result.reason)
+      onNavigate?.('cases')
+      return
+    }
+
+    await refreshActiveCase()
+    setMessage('Case submitted. Status is now Ready for Review.')
+    onNavigate?.('dashboard')
+  }
+
+  const handleRemoveDocument = async (documentId) => {
+    if (!activeCase) return
+
+    await removeDocumentFromCase(activeCase.id, documentId)
+    await refreshActiveCase()
+    setMessage('Document removed. Completeness and case status updated.')
+  }
+
+  if (loadingCase) {
+    return (
+      <div className="min-h-screen bg-surface p-8">
+        <div className="max-w-3xl mx-auto bg-surface-container-lowest rounded-xl p-8 border border-outline/20">
+          <h1 className="font-display text-3xl font-bold text-on-surface mb-3">Documents</h1>
+          <p className="text-on-surface-variant">Loading active case data...</p>
+        </div>
+      </div>
+    )
+  }
+
+  if (!activeCase) {
+    return (
+      <div className="min-h-screen bg-surface p-8">
+        <div className="max-w-3xl mx-auto bg-surface-container-lowest rounded-xl p-8 border border-outline/20">
+          <h1 className="font-display text-3xl font-bold text-on-surface mb-3">Documents</h1>
+          <p className="text-on-surface-variant mb-6">No active case selected. Open Case Files and choose a case first.</p>
+          <button
+            onClick={() => onNavigate?.('cases')}
+            className="px-6 py-3 rounded-lg bg-primary text-on-primary hover:bg-primary/90 transition-colors"
+          >
+            Go to Case Files
+          </button>
+        </div>
+      </div>
+    )
+  }
+
+  const requiredReady = hasRequiredDocuments(activeCase)
+  const selectedCategoryUploaded = (activeCase.documents || []).some((document) => document.category === selectedCategory)
+
   return (
     <div className="min-h-screen bg-surface pb-12">
-      {/* Header */}
       <div className="px-8 pt-8 pb-6">
-        <div className="flex items-start justify-between">
+        <div className="flex items-start justify-between gap-4">
           <div>
             <div className="flex items-center gap-2 mb-2">
               <Shield className="w-4 h-4 text-tertiary" />
-              <span className="text-[10px] font-semibold text-tertiary tracking-widest uppercase">Secure Document Repository</span>
+              <span className="text-[10px] font-semibold text-tertiary tracking-widest uppercase">Progressive Document Collection</span>
             </div>
-            <h1 className="font-display text-4xl font-bold text-on-surface mb-2">The Vault</h1>
-            <p className="text-on-surface-variant">
-              Securely manage mandatory compliance documentation for Client <span className="font-medium text-on-surface">#WF-99210</span> (Arthur Sterling).
-            </p>
+            <h1 className="font-display text-4xl font-bold text-on-surface mb-2">Documents</h1>
+            <p className="text-on-surface-variant">Case: <span className="font-medium text-on-surface">{activeCase.clientName}</span> ({activeCase.id})</p>
+            <p className="text-on-surface-variant mt-1">Current Status: <span className="font-medium text-on-surface">{activeCase.status}</span></p>
           </div>
-          
-          {/* Completeness Score */}
-          <div className="bg-surface-container-lowest rounded-xl p-5 shadow-ambient flex items-center gap-4">
-            <div className="relative w-16 h-16">
-              <svg className="w-16 h-16 -rotate-90">
-                <circle cx="32" cy="32" r="28" stroke="hsl(var(--surface-container-high))" strokeWidth="4" fill="none" />
-                <circle cx="32" cy="32" r="28" stroke="hsl(var(--primary))" strokeWidth="4" fill="none" 
-                  strokeDasharray={`${(completenessScore / 100) * 2 * Math.PI * 28} ${2 * Math.PI * 28}`} 
-                  strokeLinecap="round"
-                />
-              </svg>
-              <span className="absolute inset-0 flex items-center justify-center font-display font-bold text-lg text-on-surface">{completenessScore}%</span>
-            </div>
-            <div>
-              <p className="text-sm font-medium text-on-surface">Completeness Score</p>
-              <p className="text-xs text-on-surface-variant">{Math.round((completenessScore / 100) * 8)} of 8 mandatory items</p>
-              <span className="inline-block mt-2 px-2 py-0.5 bg-tertiary/10 text-tertiary text-[10px] font-semibold rounded">{completenessScore > 80 ? 'HIGH' : completenessScore > 50 ? 'MEDIUM' : 'LOW'} CONFIDENCE</span>
+
+          <div className="bg-surface-container-lowest rounded-xl p-5 shadow-ambient">
+            <p className="text-sm font-medium text-on-surface">Required Document Completeness</p>
+            <p className="text-xs text-on-surface-variant mt-1">{completeness}% complete</p>
+            <div className="w-48 h-2 bg-surface-container-high rounded-full mt-3 overflow-hidden">
+              <div className="h-full bg-primary rounded-full" style={{ width: `${completeness}%` }} />
             </div>
           </div>
         </div>
       </div>
 
-      {/* Main Content */}
       <div className="px-8 grid grid-cols-12 gap-6">
-        {/* Left Column - Categories & Upload */}
         <div className="col-span-4 space-y-6">
-          {/* Mandatory Categories */}
           <div className="bg-surface-container-lowest rounded-xl p-6 shadow-ambient">
-            <h2 className="font-display text-lg font-bold text-on-surface mb-4 flex items-center gap-2">
-              <span className="text-primary">✓</span>
-              Mandatory Categories
-            </h2>
-            
+            <h2 className="font-display text-lg font-bold text-on-surface mb-4">Required Categories</h2>
             <div className="space-y-3">
-              {categories.map((cat) => (
-                <div 
-                  key={cat.id}
-                  className={`flex items-center justify-between p-3 rounded-lg cursor-pointer transition-colors ${
-                    cat.status === 'required' 
-                      ? 'bg-error/5 border border-error/20' 
-                      : 'bg-surface-container-low hover:bg-surface-container'
-                  }`}
-                >
-                  <div className="flex items-center gap-3">
-                    {cat.status === 'complete' ? (
-                      <CheckCircle2 className="w-5 h-5 text-success" />
-                    ) : cat.status === 'required' ? (
-                      <AlertCircle className="w-5 h-5 text-error" />
+              {requiredCategories.map((category) => {
+                const present = (activeCase.documents || []).some((doc) => doc.category === category)
+                return (
+                  <div key={category} className="flex items-center justify-between p-3 rounded-lg bg-surface-container-low">
+                    <span className="text-sm text-on-surface">{category}</span>
+                    {present ? (
+                      <span className="inline-flex items-center gap-1 text-xs text-success">
+                        <CheckCircle2 className="w-4 h-4" /> Complete
+                      </span>
                     ) : (
-                      <div className="w-5 h-5 rounded-full bg-surface-container-high flex items-center justify-center">
-                        <span className="text-[10px] text-on-surface-variant">···</span>
-                      </div>
-                    )}
-                    <span className={`text-sm font-medium ${cat.status === 'required' ? 'text-error' : 'text-on-surface'}`}>
-                      {cat.name}
-                    </span>
-                    {cat.status === 'required' && (
-                      <span className="px-2 py-0.5 bg-error text-white text-[10px] font-semibold rounded">REQUIRED</span>
-                    )}
-                    {cat.status === 'optional' && (
-                      <span className="px-2 py-0.5 bg-surface-container-high text-on-surface-variant text-[10px] font-semibold rounded">OPTIONAL</span>
+                      <span className="inline-flex items-center gap-1 text-xs text-error">
+                        <AlertCircle className="w-4 h-4" /> Missing
+                      </span>
                     )}
                   </div>
-                  <ChevronRight className="w-4 h-4 text-on-surface-variant" />
-                </div>
-              ))}
+                )
+              })}
             </div>
-          </div>
-          
-          {/* Security Card */}
-          <div className="rounded-xl gradient-primary p-6 text-white relative overflow-hidden">
-            <div className="absolute bottom-0 right-0 w-24 h-24 bg-white/10 rounded-full translate-y-1/2 translate-x-1/2" />
-            <Shield className="w-8 h-8 mb-4 opacity-80" />
-            <h3 className="font-display text-lg font-bold mb-2">Private Banking Security</h3>
-            <p className="text-sm text-white/80 mb-4">
-              Your documents are encrypted with AES-256 vault-grade protection and distributed across isolated storage clusters.
-            </p>
-            <button className="px-4 py-2 bg-white/20 rounded-lg text-sm font-medium hover:bg-white/30 transition-colors">
-              REVIEW LOGS
-            </button>
           </div>
         </div>
 
-        {/* Right Column - Upload & Document History */}
         <div className="col-span-8 space-y-6">
-          {/* Upload Area */}
-          <div 
-            onDragEnter={handleDrag}
-            onDragLeave={handleDrag}
-            onDragOver={handleDrag}
-            onDrop={handleDrop}
-            onClick={() => document.getElementById('file-upload').click()}
-            className={`border-2 border-dashed rounded-xl p-8 text-center transition-colors cursor-pointer ${
-              dragActive 
-                ? 'border-primary bg-primary/5' 
-                : 'border-outline/30 bg-surface-container-low/50 hover:bg-surface-container-low'
-            }`}
-          >
-            <input 
-              id="file-upload" 
-              type="file" 
-              multiple 
-              accept=".pdf,.jpg,.jpeg,.png"
-              onChange={handleFileInput}
-              className="hidden"
-            />
-            <div className="w-14 h-14 rounded-full bg-error/10 flex items-center justify-center mx-auto mb-4">
-              {uploading ? (
-                <Loader2 className="w-6 h-6 text-error animate-spin" />
-              ) : (
-                <Upload className="w-6 h-6 text-error" />
-              )}
-            </div>
-            <h3 className="font-display text-lg font-bold text-on-surface mb-1">
-              {uploading ? 'Processing Documents...' : 'Upload Compliance Documents'}
-            </h3>
-            <p className="text-sm text-on-surface-variant mb-4">
-              Drag and drop files here, or click to browse local storage
-            </p>
-            <div className="flex items-center justify-center gap-2">
-              {['PDF', 'JPG', 'PNG'].map((format) => (
-                <span key={format} className="px-3 py-1 bg-surface-container rounded text-xs text-on-surface-variant">
-                  {format}
-                </span>
-              ))}
-            </div>
-          </div>
-          
-          {/* Document History */}
           <div className="bg-surface-container-lowest rounded-xl p-6 shadow-ambient">
-            <div className="flex items-center justify-between mb-6">
-              <h2 className="font-display text-lg font-bold text-on-surface">Document History</h2>
-              <div className="flex items-center gap-2">
-                <button className="p-2 rounded-lg hover:bg-surface-container transition-colors">
-                  <Filter className="w-4 h-4 text-on-surface-variant" />
-                </button>
-                <button className="p-2 rounded-lg hover:bg-surface-container transition-colors">
-                  <RefreshCw className="w-4 h-4 text-on-surface-variant" />
-                </button>
-              </div>
-            </div>
-            
-            <table className="w-full">
-              <thead>
-                <tr className="text-left">
-                  <th className="pb-3 text-[10px] font-semibold text-on-surface-variant tracking-wider uppercase">Document Name</th>
-                  <th className="pb-3 text-[10px] font-semibold text-on-surface-variant tracking-wider uppercase">Category</th>
-                  <th className="pb-3 text-[10px] font-semibold text-on-surface-variant tracking-wider uppercase">Uploaded</th>
-                  <th className="pb-3 text-[10px] font-semibold text-on-surface-variant tracking-wider uppercase text-right">Status</th>
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-outline/5">
-                {(uploadedFiles.length > 0 ? uploadedFiles : documents).map((doc, idx) => {
-                  const config = statusConfig[doc.status]
-                  const StatusIcon = config?.icon || AlertCircle
-                  
-                  return (
-                    <tr key={idx} className="hover:bg-surface-container-low/50 transition-colors">
-                      <td className="py-4">
-                        <div className="flex items-center gap-3">
-                          <div className={`w-8 h-8 rounded-lg flex items-center justify-center ${
-                            doc.type === 'pdf' ? 'bg-error/10' : 
-                            doc.type === 'image' ? 'bg-surface-container-high' : 
-                            'bg-error/10'
-                          }`}>
-                            <FileText className={`w-4 h-4 ${doc.type === 'pdf' ? 'text-error' : 'text-on-surface-variant'}`} />
-                          </div>
-                          <div>
-                            <p className={`text-sm font-medium ${doc.status === 'missing' ? 'text-error' : 'text-on-surface'}`}>
-                              {doc.name}
-                            </p>
-                            <p className="text-xs text-on-surface-variant">{doc.size}</p>
-                          </div>
+            <h2 className="font-display text-lg font-bold text-on-surface mb-4">Upload Documents</h2>
+
+            <div className="mb-4">
+              <div>
+                <label className="text-[10px] font-semibold text-on-surface-variant tracking-wider uppercase mb-2 block">Document Category</label>
+                <div className="space-y-3">
+                  <select
+                    value={selectedCategory}
+                    onChange={(e) => setSelectedCategory(e.target.value)}
+                    className={`w-full px-3 py-2 rounded-lg text-sm text-on-surface transition-colors ${
+                      selectedCategoryUploaded
+                        ? 'bg-success/5 border border-success/35'
+                        : 'bg-surface-container border border-warning/30'
+                    }`}
+                  >
+                    {allCategories.map((category) => (
+                      <option key={category} value={category}>{category}</option>
+                    ))}
+                  </select>
+                  <div className="flex flex-wrap gap-2">
+                    {allCategories.map((category) => {
+                      const uploaded = (activeCase.documents || []).some((document) => document.category === category)
+                      return (
+                        <div
+                          key={category}
+                          className={`inline-flex items-center gap-2 rounded-full px-3 py-1.5 text-xs ${
+                            uploaded
+                              ? 'bg-success/10 text-success'
+                              : 'bg-surface-container text-on-surface-variant'
+                          }`}
+                        >
+                          <span className={`h-2 w-2 rounded-full ${uploaded ? 'bg-success' : 'bg-outline/50'}`} />
+                          <span>{category}</span>
                         </div>
-                      </td>
-                      <td className="py-4 text-sm text-on-surface-variant">{doc.category}</td>
-                      <td className="py-4 text-sm text-on-surface-variant">{doc.uploaded}</td>
-                      <td className="py-4 text-right">
-                        <span className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full text-[10px] font-semibold ${config?.bg || 'bg-surface-container-high'} ${config?.color || 'text-on-surface-variant'}`}>
-                          {config?.icon && <StatusIcon className="w-3 h-3" />}
-                          {config?.label || doc.status.toUpperCase()}
-                        </span>
-                      </td>
-                    </tr>
-                  )
-                })}
-              </tbody>
-            </table>
-            
-            {/* Pagination */}
-            <div className="flex items-center justify-between mt-4 pt-4 border-t border-outline/5">
-              <p className="text-xs text-on-surface-variant">Showing 4 of 4 document entries</p>
-              <div className="flex items-center gap-2">
-                <button className="text-sm text-on-surface-variant hover:text-on-surface transition-colors">Prev</button>
-                <button className="w-6 h-6 rounded bg-primary text-white text-sm font-medium">1</button>
-                <button className="w-6 h-6 rounded hover:bg-surface-container text-sm text-on-surface-variant">2</button>
-                <button className="text-sm text-on-surface-variant hover:text-on-surface transition-colors">Next</button>
+                      )
+                    })}
+                  </div>
+                </div>
               </div>
             </div>
+
+            <label className="w-full border-2 border-dashed border-outline/30 rounded-xl p-8 text-center cursor-pointer block hover:bg-surface-container-low transition-colors">
+              <input type="file" multiple className="hidden" onChange={handleFileInput} />
+              <div className="w-14 h-14 rounded-full bg-primary/10 flex items-center justify-center mx-auto mb-4">
+                {uploading ? <Loader2 className="w-6 h-6 text-primary animate-spin" /> : <Upload className="w-6 h-6 text-primary" />}
+              </div>
+              <h3 className="font-display text-lg font-bold text-on-surface mb-1">{uploading ? 'Uploading...' : 'Upload Files'}</h3>
+              <p className="text-sm text-on-surface-variant">PDF, JPG, PNG, TXT</p>
+            </label>
+          </div>
+
+          <div className="bg-surface-container-lowest rounded-xl p-6 shadow-ambient">
+            <div className="flex items-center justify-between mb-4">
+              <h2 className="font-display text-lg font-bold text-on-surface">Uploaded Documents</h2>
+              <button
+                onClick={handleSubmitForReview}
+                className="px-4 py-2 rounded-lg bg-tertiary/15 text-tertiary text-sm font-medium hover:bg-tertiary/25 transition-colors inline-flex items-center gap-2"
+              >
+                <Send className="w-4 h-4" />
+                Submit for Review
+              </button>
+            </div>
+
+            {message && <p className="mb-3 text-xs text-on-surface-variant">{message}</p>}
+
+            {(activeCase.documents || []).length > 0 ? (
+              <div className="space-y-2">
+                {(activeCase.documents || []).map((doc) => (
+                  <div key={doc.id} className="flex items-center justify-between p-3 rounded-lg bg-surface-container">
+                    <div className="flex items-center gap-3 min-w-0">
+                      <FileText className="w-4 h-4 text-on-surface-variant" />
+                      <div className="min-w-0">
+                        <p className="text-sm text-on-surface truncate">{doc.name}</p>
+                        <p className="text-xs text-on-surface-variant">{doc.category} • {doc.uploader} • {doc.size}</p>
+                      </div>
+                    </div>
+                    <div className="flex items-center gap-3">
+                      <span className="text-xs text-on-surface-variant">{new Date(doc.uploadedAt).toLocaleDateString()}</span>
+                      <button
+                        type="button"
+                        onClick={() => handleRemoveDocument(doc.id)}
+                        className="inline-flex items-center gap-1 px-2 py-1 rounded text-xs text-error hover:bg-error/10 transition-colors"
+                      >
+                        <Trash2 className="w-3 h-3" />
+                        Remove
+                      </button>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            ) : (
+              <p className="text-sm text-on-surface-variant">No documents uploaded yet. Case will remain Draft/Missing Documents until required docs are complete.</p>
+            )}
+
+            <p className={`mt-4 text-xs ${requiredReady ? 'text-success' : 'text-error'}`}>
+              {requiredReady
+                ? 'All required document categories are complete. You can submit the case for review.'
+                : 'Required categories are still incomplete. Status cannot move to Ready for Review yet.'}
+            </p>
           </div>
         </div>
       </div>
