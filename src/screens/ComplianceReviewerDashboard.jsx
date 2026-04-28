@@ -1,391 +1,353 @@
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import {
-  Search,
-  CheckCircle2,
   AlertTriangle,
+  CheckCircle2,
+  Clock3,
   FileText,
-  MessageSquare,
-  Clock,
-  ThumbsUp,
-  Flag,
-  ChevronRight,
-  Eye,
-  MessageCircle,
-  Download,
-  ArrowRight,
+  Search,
+  ShieldCheck,
+  ShieldX,
 } from 'lucide-react'
+import {
+  CASE_STATUS,
+  getAllCaseFiles,
+  getDocumentCompletionSummary,
+  getReadinessScore,
+  hasFreshAiAnalysis,
+  setActiveCaseId,
+} from '../lib/caseFiles'
 
-const reviewQueueCases = [
-  {
-    id: 'WF-1113',
-    clientName: 'Isabelle Wong',
-    status: 'Ready for Review',
-    readinessScore: 95,
-    riskFlags: 0,
-    sowCompleteness: 100,
-    lastAction: 'Ops marked as ready',
-    lastActionTime: '2 hours ago',
-    priority: 'normal',
-  },
-  {
-    id: 'WF-1116',
-    clientName: 'Daniel Koh',
-    status: 'Escalated',
-    readinessScore: 72,
-    riskFlags: 2,
-    sowCompleteness: 85,
-    lastAction: 'System flagged potential sanctions match',
-    lastActionTime: '3 hours ago',
-    priority: 'high',
-  },
-  {
-    id: 'WF-1124',
-    clientName: 'Celine Ong',
-    status: 'Ready for Review',
-    readinessScore: 88,
-    riskFlags: 1,
-    sowCompleteness: 95,
-    lastAction: 'Documents verified by Ops',
-    lastActionTime: '1 hour ago',
-    priority: 'normal',
-  },
-  {
-    id: 'WF-1108',
-    clientName: 'Marcus Lee',
-    status: 'Escalated',
-    readinessScore: 80,
-    riskFlags: 1,
-    sowCompleteness: 90,
-    lastAction: 'Pending clarification response',
-    lastActionTime: '6 hours ago',
-    priority: 'high',
-  },
-]
-
-const approvedCases = [
-  {
-    id: 'WF-1097',
-    clientName: 'Nadia Aziz',
-    approvedDate: '2026-04-18',
-    approvalNote: 'All documents verified, no risks identified',
-  },
-  {
-    id: 'WF-1091',
-    clientName: 'James Peterson',
-    approvedDate: '2026-04-17',
-    approvalNote: 'Passed enhanced due diligence',
-  },
-]
-
-const riskFlagDetails = {
-  'WF-1116': [
-    { id: 1, title: 'Potential Sanctions Match', severity: 'high', description: 'Name match in international sanctions list requires verification' },
-    { id: 2, title: 'Unusual Wealth Source', severity: 'medium', description: 'Source of funds narrative lacks specific transaction details' },
-  ],
-  'WF-1124': [
-    { id: 1, title: 'Incomplete Employment History', severity: 'medium', description: 'Gap in employment record from 2018-2019' },
-  ],
-  'WF-1108': [
-    { id: 1, title: 'Missing Business Registration', severity: 'medium', description: 'Self-employment income declared but no business registration provided' },
-  ],
+function formatDateTime(value) {
+  if (!value) return '--'
+  return new Date(value).toLocaleString([], {
+    year: 'numeric',
+    month: 'numeric',
+    day: 'numeric',
+    hour: 'numeric',
+    minute: '2-digit',
+  })
 }
 
-const caseDocuments = {
-  'WF-1113': ['Passport.pdf', 'Tax_Returns_2024-2025.pdf', 'Bank_Statements.pdf', 'Employment_Letter.pdf'],
-  'WF-1116': ['Passport.pdf', 'Tax_Returns.pdf', 'Bank_Statements.pdf', 'POF_Letter.pdf', 'Property_Deed.pdf'],
-  'WF-1124': ['ID.pdf', 'Payslips_3mo.pdf', 'Tax_Return_2025.pdf', 'Bank_Statements_6mo.pdf'],
-  'WF-1108': ['Passport.pdf', 'Business_Certificate.pdf', 'Tax_Returns_2024-2025.pdf', 'Bank_Statements.pdf'],
+function statusTone(status) {
+  if (status === CASE_STATUS.APPROVED) return 'bg-success/12 text-success'
+  if (status === CASE_STATUS.ACTION_REQUIRED) return 'bg-warning/15 text-warning'
+  if (status === CASE_STATUS.REJECTED) return 'bg-error/12 text-error'
+  if (status === CASE_STATUS.ESCALATED) return 'bg-error/12 text-error'
+  if (status === CASE_STATUS.UNDER_REVIEW) return 'bg-tertiary/12 text-tertiary'
+  if (status === CASE_STATUS.PENDING_REVIEW) return 'bg-warning/15 text-warning'
+  return 'bg-surface-container-high text-on-surface-variant'
 }
 
-export default function ComplianceReviewerDashboard() {
-  const [query, setQuery] = useState('')
-  const [selectedCase, setSelectedCase] = useState(null)
+function riskTone(level) {
+  if (level === 'High') return 'bg-error/10 text-error'
+  if (level === 'Medium') return 'bg-warning/15 text-warning'
+  return 'bg-success/12 text-success'
+}
+
+function getPriority(caseFile, readiness) {
+  const analysis = caseFile.aiAnalysis || {}
+  const risks = analysis.risks || []
+  const hasHighRisk = risks.some((risk) => /high|critical/i.test(String(risk.severity || risk.priority || '')))
+  if (caseFile.status === CASE_STATUS.ESCALATED || hasHighRisk) return 'High'
+  if (caseFile.status === CASE_STATUS.PENDING_REVIEW) return 'Needs Attention'
+  if (readiness < 100 || !hasFreshAiAnalysis(caseFile)) return 'Medium'
+  return 'Normal'
+}
+
+function getRiskLevel(caseFile, readiness) {
+  const analysis = caseFile.aiAnalysis || {}
+  const risks = analysis.risks || []
+  const hasHighRisk = risks.some((risk) => /high|critical/i.test(String(risk.severity || risk.priority || '')))
+  const hasMediumRisk = risks.some((risk) => /medium/i.test(String(risk.severity || risk.priority || '')))
+  if (hasHighRisk || caseFile.status === CASE_STATUS.ESCALATED) return 'High'
+  if (hasMediumRisk || readiness < 100 || !hasFreshAiAnalysis(caseFile)) return 'Medium'
+  return 'Low'
+}
+
+function getReviewNotes(caseFile, readiness, completion) {
+  const notes = []
+  if (completion.missingRequiredDocuments.length > 0) {
+    notes.push(`${completion.missingRequiredDocuments.length} required document category still missing.`)
+  }
+  if (!hasFreshAiAnalysis(caseFile)) {
+    notes.push('AI analysis is not current after latest upload.')
+  }
+  const risks = caseFile.aiAnalysis?.risks || []
+  risks
+    .filter((risk) => /high|critical|medium/i.test(String(risk.severity || risk.priority || '')))
+    .forEach((risk) => notes.push(risk.title || risk.description || 'AI risk finding requires review.'))
+  if (readiness === 100 && notes.length === 0) {
+    notes.push('All required evidence is complete and no high-priority AI blockers are open.')
+  }
+  return notes
+}
+
+function MetricCard({ label, value, icon: Icon, tone = 'text-on-surface' }) {
+  return (
+    <div className="rounded-2xl border border-outline/10 bg-surface-container-lowest p-5 shadow-ambient">
+      <div className="mb-4 flex h-10 w-10 items-center justify-center rounded-xl bg-surface">
+        <Icon className={`h-5 w-5 ${tone}`} />
+      </div>
+      <p className={`font-display text-3xl font-bold ${tone}`}>{value}</p>
+      <p className="mt-2 text-sm text-on-surface-variant">{label}</p>
+    </div>
+  )
+}
+
+export default function ComplianceReviewerDashboard({ onNavigate }) {
+  const [cases, setCases] = useState([])
+  const [selectedCaseId, setSelectedCaseId] = useState('')
   const [statusFilter, setStatusFilter] = useState('All')
+  const [query, setQuery] = useState('')
+  const [loading, setLoading] = useState(true)
+
+  const loadCases = async () => {
+    setLoading(true)
+    const records = await getAllCaseFiles()
+    const enriched = await Promise.all(records.map(async (caseFile) => {
+      const readiness = await getReadinessScore(caseFile.id)
+      const completion = getDocumentCompletionSummary(caseFile)
+      const percentage = readiness?.percentage ?? 0
+      return {
+        ...caseFile,
+        readiness: percentage,
+        completion,
+        riskLevel: getRiskLevel(caseFile, percentage),
+        priority: getPriority(caseFile, percentage),
+        reviewNotes: getReviewNotes(caseFile, percentage, completion),
+      }
+    }))
+    const reviewable = enriched.filter((caseFile) => [
+      CASE_STATUS.PENDING_REVIEW,
+      CASE_STATUS.UNDER_REVIEW,
+      CASE_STATUS.ESCALATED,
+      CASE_STATUS.APPROVED,
+      CASE_STATUS.ACTION_REQUIRED,
+      CASE_STATUS.REJECTED,
+    ].includes(caseFile.status))
+    setCases(reviewable)
+    setSelectedCaseId((current) => current || reviewable.find((item) => item.status === CASE_STATUS.PENDING_REVIEW)?.id || reviewable.find((item) => item.status !== CASE_STATUS.APPROVED)?.id || reviewable[0]?.id || '')
+    setLoading(false)
+  }
+
+  useEffect(() => {
+    loadCases()
+  }, [])
 
   const filteredCases = useMemo(() => {
-    return reviewQueueCases.filter((item) => {
-      const matchesStatus = statusFilter === 'All' || item.status === statusFilter
-      const matchesQuery = item.clientName.toLowerCase().includes(query.toLowerCase())
-      return matchesStatus && matchesQuery
-    })
-  }, [statusFilter, query])
+    const search = query.trim().toLowerCase()
+    return cases
+      .filter((caseFile) => statusFilter === 'All' || caseFile.status === statusFilter)
+      .filter((caseFile) => !search
+        || String(caseFile.clientName || '').toLowerCase().includes(search)
+        || String(caseFile.id || '').toLowerCase().includes(search))
+      .sort((a, b) => {
+        const priorityScore = { High: 4, 'Needs Attention': 3, Medium: 2, Normal: 1 }
+        return (priorityScore[b.priority] || 0) - (priorityScore[a.priority] || 0)
+          || new Date(b.updatedAt || 0) - new Date(a.updatedAt || 0)
+      })
+  }, [cases, query, statusFilter])
 
-  const getStatusColor = (status) => {
-    switch (status) {
-      case 'Ready for Review':
-        return 'bg-success/10 text-success'
-      case 'Escalated':
-        return 'bg-error/10 text-error'
-      case 'Approved':
-        return 'bg-tertiary/10 text-tertiary'
-      default:
-        return 'bg-surface-container-high text-on-surface-variant'
-    }
+  const selectedCase = cases.find((item) => item.id === selectedCaseId) || filteredCases[0] || null
+
+  const metrics = useMemo(() => ({
+    pendingReview: cases.filter((item) => item.status === CASE_STATUS.PENDING_REVIEW).length,
+    underReview: cases.filter((item) => item.status === CASE_STATUS.UNDER_REVIEW).length,
+    escalated: cases.filter((item) => item.status === CASE_STATUS.ESCALATED).length,
+    approved: cases.filter((item) => item.status === CASE_STATUS.APPROVED).length,
+  }), [cases])
+
+  const handleOpenCase = (caseId) => {
+    setActiveCaseId(caseId)
+    onNavigate?.('compliance-case-review')
   }
-
-  const getPriorityBadge = (priority) => {
-    return priority === 'high' ? 'bg-error/10 text-error' : 'bg-surface-container-high text-on-surface-variant'
-  }
-
-  const getRiskSeverityColor = (severity) => {
-    switch (severity) {
-      case 'high':
-        return 'bg-error/10 text-error'
-      case 'medium':
-        return 'bg-warning/10 text-warning'
-      case 'low':
-        return 'bg-tertiary/10 text-tertiary'
-      default:
-        return 'bg-surface-container-high text-on-surface-variant'
-    }
-  }
-
-  const currentCaseDetail = selectedCase ? reviewQueueCases.find((c) => c.id === selectedCase) : null
 
   return (
-    <div className="min-h-screen bg-surface p-8 pb-10 space-y-6">
-      <div>
-        <p className="text-xs font-semibold uppercase tracking-wider text-primary mb-2">Compliance Reviewer</p>
-        <h1 className="font-display text-3xl font-bold text-on-surface">Review Queue & Approvals</h1>
-        <p className="text-on-surface-variant mt-1">Review cases marked "Ready for Review" or escalated for enhanced assessment.</p>
-      </div>
-
-      <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-        {/* Left: Review Queue */}
-        <div className="lg:col-span-2 space-y-4">
-          <div className="bg-surface-container-lowest rounded-xl p-5 shadow-ambient">
-            <div className="flex items-center justify-between mb-4">
-              <h2 className="font-display text-xl font-bold text-on-surface">Review Queue</h2>
-              <span className="text-xs font-semibold px-2.5 py-1 bg-error/10 text-error rounded-full">
-                {filteredCases.filter((c) => c.priority === 'high').length} High Priority
-              </span>
-            </div>
-
-            <div className="flex flex-wrap gap-2 mb-4">
-              {['All', 'Ready for Review', 'Escalated'].map((status) => (
-                <button
-                  key={status}
-                  onClick={() => setStatusFilter(status)}
-                  className={`px-3 py-1.5 rounded-full text-xs font-medium transition-colors ${
-                    statusFilter === status
-                      ? 'bg-primary text-white'
-                      : 'bg-surface-container text-on-surface-variant hover:text-on-surface'
-                  }`}
-                >
-                  {status}
-                </button>
-              ))}
-            </div>
-
-            <div className="relative mb-4">
-              <Search className="w-4 h-4 absolute left-3 top-1/2 -translate-y-1/2 text-on-surface-variant" />
-              <input
-                value={query}
-                onChange={(e) => setQuery(e.target.value)}
-                placeholder="Search by client name"
-                className="w-full pl-10 pr-4 py-2.5 bg-surface-container rounded-lg text-sm text-on-surface placeholder:text-on-surface-variant focus:outline-none focus:ring-2 focus:ring-primary/20"
-              />
-            </div>
-
-            <div className="space-y-3">
-              {filteredCases.map((item) => (
-                <button
-                  key={item.id}
-                  onClick={() => setSelectedCase(item.id)}
-                  className={`w-full p-4 rounded-lg border-2 transition-all text-left ${
-                    selectedCase === item.id
-                      ? 'border-primary bg-primary/5'
-                      : 'border-outline/10 bg-surface-container hover:border-primary/30'
-                  }`}
-                >
-                  <div className="flex items-start justify-between mb-2">
-                    <div>
-                      <p className="font-semibold text-on-surface">{item.clientName}</p>
-                      <p className="text-xs text-on-surface-variant">{item.id}</p>
-                    </div>
-                    <span className={`px-2 py-1 rounded-full text-[10px] font-semibold ${getStatusColor(item.status)}`}>
-                      {item.status}
-                    </span>
-                  </div>
-
-                  <div className="flex flex-wrap gap-3 text-xs mb-2">
-                    <div className="flex items-center gap-1">
-                      <span className="text-on-surface-variant">Readiness:</span>
-                      <span className="font-semibold text-on-surface">{item.readinessScore}%</span>
-                    </div>
-                    <div className="flex items-center gap-1">
-                      <Flag className="w-3 h-3 text-error" />
-                      <span className="font-semibold text-on-surface">{item.riskFlags}</span>
-                      <span className="text-on-surface-variant">risk flags</span>
-                    </div>
-                    <div className="flex items-center gap-1">
-                      <span className="text-on-surface-variant">SoW:</span>
-                      <span className="font-semibold text-on-surface">{item.sowCompleteness}%</span>
-                    </div>
-                  </div>
-
-                  <div className="flex items-center justify-between">
-                    <p className="text-xs text-on-surface-variant">{item.lastAction}</p>
-                    <span className={`px-2 py-1 rounded text-[10px] font-semibold ${getPriorityBadge(item.priority)}`}>
-                      {item.priority === 'high' ? 'High' : 'Normal'}
-                    </span>
-                  </div>
-                </button>
-              ))}
-            </div>
-          </div>
-
-          {/* Approved Cases */}
-          <div className="bg-surface-container-lowest rounded-xl p-5 shadow-ambient">
-            <h2 className="font-display text-lg font-bold text-on-surface mb-4">Recently Approved</h2>
-            <div className="space-y-3">
-              {approvedCases.map((item) => (
-                <div key={item.id} className="p-4 rounded-lg bg-surface-container border border-tertiary/20">
-                  <div className="flex items-start justify-between mb-1">
-                    <div>
-                      <p className="font-semibold text-on-surface">{item.clientName}</p>
-                      <p className="text-xs text-on-surface-variant">{item.id}</p>
-                    </div>
-                    <CheckCircle2 className="w-5 h-5 text-tertiary" />
-                  </div>
-                  <p className="text-sm text-on-surface-variant mt-2">{item.approvalNote}</p>
-                  <p className="text-xs text-on-surface-variant mt-2">Approved: {item.approvedDate}</p>
-                </div>
-              ))}
-            </div>
-          </div>
+    <div className="min-h-screen bg-surface p-8 pb-10">
+      <div className="max-w-7xl mx-auto space-y-6">
+        <div>
+          <p className="mb-2 text-xs font-semibold uppercase tracking-[0.24em] text-primary">Compliance Workspace</p>
+          <h1 className="font-display text-4xl font-bold text-on-surface">Review Queue</h1>
+          <p className="mt-2 text-on-surface-variant">Review submitted cases, approve clean files, or return issues for remediation.</p>
         </div>
 
-        {/* Right: Case Details */}
-        <div className="lg:col-span-1">
-          {currentCaseDetail ? (
-            <div className="space-y-4">
-              {/* Case Header */}
-              <div className="bg-surface-container-lowest rounded-xl p-5 shadow-ambient">
-                <p className="text-xs text-on-surface-variant uppercase tracking-wider mb-2">Case Details</p>
-                <h3 className="font-display text-xl font-bold text-on-surface mb-1">{currentCaseDetail.clientName}</h3>
-                <p className="text-sm text-on-surface-variant mb-4">{currentCaseDetail.id}</p>
+        <div className="grid grid-cols-1 gap-4 md:grid-cols-4">
+          <MetricCard label="Pending Review" value={metrics.pendingReview} icon={Clock3} tone="text-warning" />
+          <MetricCard label="Under Review" value={metrics.underReview} icon={FileText} tone="text-tertiary" />
+          <MetricCard label="Escalated" value={metrics.escalated} icon={ShieldX} tone="text-error" />
+          <MetricCard label="Approved" value={metrics.approved} icon={ShieldCheck} tone="text-success" />
+        </div>
 
-                <div className="space-y-3 mb-4">
-                  <div>
-                    <p className="text-xs text-on-surface-variant uppercase tracking-wider mb-1">Readiness Score</p>
-                    <div className="flex items-center gap-2">
-                      <div className="flex-1 h-2 bg-surface-container rounded-full overflow-hidden">
-                        <div
-                          className="h-full bg-primary transition-all"
-                          style={{ width: `${currentCaseDetail.readinessScore}%` }}
-                        />
-                      </div>
-                      <span className="text-sm font-bold text-on-surface">{currentCaseDetail.readinessScore}%</span>
-                    </div>
-                  </div>
+        <div className="grid grid-cols-1 gap-6 lg:grid-cols-[minmax(0,1fr)_420px]">
+          <section className="rounded-3xl border border-outline/10 bg-surface-container-lowest shadow-ambient">
+            <div className="border-b border-outline/10 p-5">
+              <h2 className="font-display text-xl font-bold text-on-surface">Cases for Compliance</h2>
+              <p className="mt-1 text-sm text-on-surface-variant">Only submitted, in-review, escalated, and approved cases appear here.</p>
+            </div>
 
-                  <div>
-                    <p className="text-xs text-on-surface-variant uppercase tracking-wider mb-1">SoW Completeness</p>
-                    <div className="flex items-center gap-2">
-                      <div className="flex-1 h-2 bg-surface-container rounded-full overflow-hidden">
-                        <div
-                          className="h-full bg-tertiary transition-all"
-                          style={{ width: `${currentCaseDetail.sowCompleteness}%` }}
-                        />
-                      </div>
-                      <span className="text-sm font-bold text-on-surface">{currentCaseDetail.sowCompleteness}%</span>
-                    </div>
-                  </div>
-                </div>
-
-                <div className="space-y-2 pb-4 border-b border-outline/10">
-                  <div>
-                    <p className="text-xs text-on-surface-variant uppercase tracking-wider mb-1">Status</p>
-                    <span className={`px-2.5 py-1 rounded-full text-xs font-semibold inline-block ${getStatusColor(currentCaseDetail.status)}`}>
-                      {currentCaseDetail.status}
-                    </span>
-                  </div>
-                  <div>
-                    <p className="text-xs text-on-surface-variant uppercase tracking-wider mb-1">Last Action</p>
-                    <p className="text-sm text-on-surface">{currentCaseDetail.lastAction}</p>
-                    <p className="text-xs text-on-surface-variant mt-1">{currentCaseDetail.lastActionTime}</p>
-                  </div>
-                </div>
-
-                <div className="pt-4 space-y-2">
-                  <button className="w-full px-4 py-2.5 rounded-lg bg-primary text-white text-sm font-medium hover:opacity-90 transition-opacity flex items-center justify-center gap-2">
-                    <Eye className="w-4 h-4" />
-                    View SoW Draft
-                  </button>
-                  <button className="w-full px-4 py-2.5 rounded-lg border border-outline/20 text-on-surface text-sm font-medium hover:bg-surface-container transition-colors flex items-center justify-center gap-2">
-                    <Download className="w-4 h-4" />
-                    Download Docs
-                  </button>
-                  <button className="w-full px-4 py-2.5 rounded-lg border border-outline/20 text-on-surface text-sm font-medium hover:bg-surface-container transition-colors flex items-center justify-center gap-2">
-                    <FileText className="w-4 h-4" />
-                    Audit Trail
-                  </button>
-                </div>
+            <div className="space-y-4 border-b border-outline/10 p-5">
+              <div className="relative">
+                <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-on-surface-variant" />
+                <input
+                  value={query}
+                  onChange={(event) => setQuery(event.target.value)}
+                  placeholder="Search client or case ID"
+                  className="w-full rounded-xl border border-outline/15 bg-surface py-2.5 pl-10 pr-4 text-sm text-on-surface focus:outline-none focus:ring-2 focus:ring-primary/20"
+                />
               </div>
+              <div className="flex flex-wrap gap-2">
+                {['All', CASE_STATUS.PENDING_REVIEW, CASE_STATUS.UNDER_REVIEW, CASE_STATUS.ESCALATED, CASE_STATUS.ACTION_REQUIRED, CASE_STATUS.REJECTED, CASE_STATUS.APPROVED].map((status) => (
+                  <button
+                    key={status}
+                    onClick={() => setStatusFilter(status)}
+                    className={`rounded-full px-3 py-1.5 text-xs font-semibold transition-colors ${
+                      statusFilter === status ? 'bg-primary text-white' : 'bg-surface text-on-surface-variant hover:text-on-surface'
+                    }`}
+                  >
+                    {status}
+                  </button>
+                ))}
+              </div>
+            </div>
 
-              {/* Risk Flags */}
-              {riskFlagDetails[currentCaseDetail.id] && riskFlagDetails[currentCaseDetail.id].length > 0 && (
-                <div className="bg-surface-container-lowest rounded-xl p-5 shadow-ambient">
-                  <div className="flex items-center gap-2 mb-4">
-                    <AlertTriangle className="w-5 h-5 text-error" />
-                    <h4 className="font-semibold text-on-surface">Risk Flags ({riskFlagDetails[currentCaseDetail.id].length})</h4>
-                  </div>
-
-                  <div className="space-y-3">
-                    {riskFlagDetails[currentCaseDetail.id].map((flag) => (
-                      <div key={flag.id} className={`p-3 rounded-lg ${getRiskSeverityColor(flag.severity)}`}>
-                        <p className="text-sm font-semibold">{flag.title}</p>
-                        <p className="text-xs mt-1 opacity-90">{flag.description}</p>
-                      </div>
-                    ))}
-                  </div>
+            <div className="p-5">
+              {loading ? (
+                <p className="text-sm text-on-surface-variant">Loading review queue...</p>
+              ) : filteredCases.length === 0 ? (
+                <div className="rounded-2xl bg-surface p-8 text-center">
+                  <CheckCircle2 className="mx-auto mb-3 h-10 w-10 text-success" />
+                  <p className="text-sm font-medium text-on-surface">No cases in this queue.</p>
+                  <p className="mt-1 text-sm text-on-surface-variant">Cases appear here after Ops/RM submits them for review.</p>
                 </div>
-              )}
-
-              {/* Documents */}
-              <div className="bg-surface-container-lowest rounded-xl p-5 shadow-ambient">
-                <h4 className="font-semibold text-on-surface mb-3 flex items-center gap-2">
-                  <FileText className="w-4 h-4" />
-                  Supporting Documents
-                </h4>
-                <div className="space-y-2">
-                  {caseDocuments[currentCaseDetail.id]?.map((doc, idx) => (
+              ) : (
+                <div className="space-y-3">
+                  {filteredCases.map((caseFile) => (
                     <button
-                      key={idx}
-                      className="w-full text-left px-3 py-2 rounded-lg bg-surface-container hover:bg-surface-container-high transition-colors flex items-center justify-between group"
+                      key={caseFile.id}
+                      onClick={() => setSelectedCaseId(caseFile.id)}
+                      className={`w-full rounded-2xl border p-4 text-left transition-colors ${
+                        selectedCase?.id === caseFile.id ? 'border-primary/30 bg-primary/5' : 'border-outline/10 bg-surface hover:border-primary/20'
+                      }`}
                     >
-                      <span className="text-sm text-on-surface">{doc}</span>
-                      <ArrowRight className="w-4 h-4 text-on-surface-variant opacity-0 group-hover:opacity-100 transition-opacity" />
+                      <div className="flex flex-wrap items-start justify-between gap-3">
+                        <div>
+                          <p className="font-semibold text-on-surface">{caseFile.clientName || 'Unnamed Client'}</p>
+                          <p className="mt-1 text-xs uppercase tracking-[0.16em] text-on-surface-variant">{caseFile.id}</p>
+                          {caseFile.status === CASE_STATUS.PENDING_REVIEW ? (
+                            <p className="mt-2 inline-flex rounded-full bg-warning/10 px-2 py-1 text-[11px] font-semibold text-warning">Needs Attention</p>
+                          ) : null}
+                        </div>
+                        <div className="flex flex-wrap gap-2">
+                          <span className={`rounded-full px-2.5 py-1 text-xs font-semibold ${statusTone(caseFile.status)}`}>{caseFile.status}</span>
+                          <span className={`rounded-full px-2.5 py-1 text-xs font-semibold ${riskTone(caseFile.riskLevel)}`}>{caseFile.riskLevel} Risk</span>
+                        </div>
+                      </div>
+                      <div className="mt-4 grid grid-cols-3 gap-3 text-sm">
+                        <div>
+                          <p className="text-xs text-on-surface-variant">Readiness</p>
+                          <p className="font-semibold text-on-surface">{caseFile.readiness}%</p>
+                        </div>
+                        <div>
+                          <p className="text-xs text-on-surface-variant">Documents</p>
+                          <p className="font-semibold text-on-surface">{caseFile.completion.requiredCompletedCount}/{caseFile.completion.requiredTotal}</p>
+                        </div>
+                        <div>
+                          <p className="text-xs text-on-surface-variant">Priority</p>
+                          <p className={caseFile.priority === 'High' ? 'font-semibold text-error' : 'font-semibold text-on-surface'}>{caseFile.priority}</p>
+                        </div>
+                      </div>
+                      <p className="mt-3 text-xs text-on-surface-variant">
+                        {caseFile.status === CASE_STATUS.PENDING_REVIEW
+                          ? `Waiting since ${formatDateTime(caseFile.submittedAt || caseFile.updatedAt)}`
+                          : caseFile.status === CASE_STATUS.UNDER_REVIEW
+                            ? `Assigned to ${caseFile.assignedComplianceOfficer || 'Compliance Officer'}`
+                            : `Updated ${formatDateTime(caseFile.updatedAt)}`}
+                      </p>
                     </button>
                   ))}
                 </div>
-              </div>
+              )}
+            </div>
+          </section>
 
-              {/* Review Actions */}
-              <div className="bg-surface-container-lowest rounded-xl p-5 shadow-ambient space-y-2">
-                <button className="w-full px-4 py-2.5 rounded-lg bg-tertiary text-white text-sm font-medium hover:opacity-90 transition-opacity flex items-center justify-center gap-2">
-                  <ThumbsUp className="w-4 h-4" />
-                  Approve Case
-                </button>
-                <button className="w-full px-4 py-2.5 rounded-lg border border-error/20 text-error text-sm font-medium hover:bg-error/5 transition-colors flex items-center justify-center gap-2">
-                  <Flag className="w-4 h-4" />
-                  Escalate
-                </button>
-                <button className="w-full px-4 py-2.5 rounded-lg border border-outline/20 text-on-surface text-sm font-medium hover:bg-surface-container transition-colors flex items-center justify-center gap-2">
-                  <MessageCircle className="w-4 h-4" />
-                  Add Comment
-                </button>
+          <aside className="rounded-3xl border border-outline/10 bg-surface-container-lowest p-5 shadow-ambient">
+            {selectedCase ? (
+              <div className="space-y-5">
+                <div>
+                  <p className="text-xs font-semibold uppercase tracking-[0.2em] text-primary">Case Review</p>
+                  <h2 className="mt-2 font-display text-2xl font-bold text-on-surface">{selectedCase.clientName || 'Unnamed Client'}</h2>
+                  <p className="mt-1 text-sm text-on-surface-variant">{selectedCase.id}</p>
+                </div>
+
+                <div className="grid grid-cols-2 gap-3">
+                  <div className="rounded-2xl bg-surface p-4">
+                    <p className="text-xs uppercase tracking-[0.14em] text-on-surface-variant">Status</p>
+                    <p className="mt-3 text-sm font-semibold text-on-surface">{selectedCase.status}</p>
+                  </div>
+                  <div className="rounded-2xl bg-surface p-4">
+                    <p className="text-xs uppercase tracking-[0.14em] text-on-surface-variant">Risk</p>
+                    <p className="mt-3 text-sm font-semibold text-on-surface">{selectedCase.riskLevel}</p>
+                  </div>
+                  <div className="rounded-2xl bg-surface p-4">
+                    <p className="text-xs uppercase tracking-[0.14em] text-on-surface-variant">Updated</p>
+                    <p className="mt-3 text-sm font-semibold text-on-surface">{formatDateTime(selectedCase.updatedAt)}</p>
+                  </div>
+                  <div className="rounded-2xl bg-surface p-4">
+                    <p className="text-xs uppercase tracking-[0.14em] text-on-surface-variant">AI</p>
+                    <p className={`mt-3 text-sm font-semibold ${hasFreshAiAnalysis(selectedCase) ? 'text-success' : 'text-warning'}`}>
+                      {hasFreshAiAnalysis(selectedCase) ? 'Current' : 'Needs refresh'}
+                    </p>
+                  </div>
+                </div>
+
+                <div className="rounded-2xl border border-outline/10 bg-surface p-4">
+                  <div className="mb-3 flex items-center gap-2">
+                    <AlertTriangle className="h-4 w-4 text-warning" />
+                    <h3 className="text-sm font-semibold text-on-surface">Review Notes</h3>
+                  </div>
+                  <div className="space-y-2">
+                    {selectedCase.reviewNotes.map((note) => (
+                      <p key={note} className="rounded-xl bg-surface-container-lowest px-3 py-2 text-sm text-on-surface-variant">{note}</p>
+                    ))}
+                  </div>
+                </div>
+
+                <div className="rounded-2xl border border-outline/10 bg-surface p-4">
+                  <div className="mb-3 flex items-center gap-2">
+                    <FileText className="h-4 w-4 text-primary" />
+                    <h3 className="text-sm font-semibold text-on-surface">Supporting Documents</h3>
+                  </div>
+                  <div className="space-y-2">
+                    {(selectedCase.documents || []).length > 0 ? (selectedCase.documents || []).slice(0, 6).map((document) => (
+                      <div key={document.id || document.name} className="rounded-xl bg-surface-container-lowest px-3 py-2">
+                        <p className="text-sm font-medium text-on-surface">{document.category || 'Supporting Evidence'}</p>
+                        <p className="text-xs text-on-surface-variant">{document.name || 'Uploaded document'}</p>
+                      </div>
+                    )) : (
+                      <p className="text-sm text-on-surface-variant">No documents uploaded.</p>
+                    )}
+                  </div>
+                </div>
+
+                <div className="space-y-2">
+                  <button
+                    onClick={() => handleOpenCase(selectedCase.id)}
+                    className="flex w-full items-center justify-center gap-2 rounded-xl bg-primary px-4 py-2.5 text-sm font-semibold text-white hover:bg-primary/90"
+                  >
+                    <FileText className="h-4 w-4" />
+                    Open Compliance Review
+                  </button>
+                </div>
               </div>
-            </div>
-          ) : (
-            <div className="bg-surface-container-lowest rounded-xl p-8 shadow-ambient flex items-center justify-center h-96">
-              <div className="text-center">
-                <Eye className="w-12 h-12 text-on-surface-variant/30 mx-auto mb-3" />
-                <p className="text-on-surface-variant">Select a case to review details</p>
+            ) : (
+              <div className="flex min-h-[420px] items-center justify-center text-center">
+                <div>
+                  <ShieldCheck className="mx-auto mb-3 h-10 w-10 text-on-surface-variant/40" />
+                  <p className="text-sm text-on-surface-variant">Select a case to review.</p>
+                </div>
               </div>
-            </div>
-          )}
+            )}
+          </aside>
         </div>
       </div>
     </div>

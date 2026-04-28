@@ -1,6 +1,7 @@
 import { Trash2, Play, Plus, FolderOpen, Send, Search } from 'lucide-react'
 import { useEffect, useMemo, useState } from 'react'
 import {
+  clearActiveCaseId,
   deleteCaseFile,
   getAllCaseFiles,
   markReadyForReview,
@@ -8,10 +9,12 @@ import {
 } from '../lib/caseFiles'
 
 const statusPill = {
-  Draft: 'bg-secondary text-secondary-foreground rounded-2xl px-4 py-1.5',
+  Draft: 'bg-surface-container-high text-on-surface-variant rounded-2xl px-4 py-1.5',
   'Missing Documents': 'bg-error/10 text-error',
-  'In Review': 'bg-tertiary/15 text-tertiary',
-  'Ready for Review': 'bg-success/15 text-success',
+  'Pending Review': 'bg-warning/20 text-warning',
+  'Under Review': 'bg-tertiary/15 text-tertiary',
+  Approved: 'bg-success/15 text-success',
+  Escalated: 'bg-error/20 text-error',
 }
 
 function formatDate(value) {
@@ -54,11 +57,12 @@ export default function SavedCaseFiles({ onNavigate }) {
       return
     }
 
-    setMessage('Case submitted. Status updated to Ready for Review.')
+    setMessage('Case submitted. Status updated to Pending Review.')
     await loadSavedCases()
   }
 
   const handleNewCase = () => {
+    clearActiveCaseId()
     onNavigate?.('new-case')
   }
 

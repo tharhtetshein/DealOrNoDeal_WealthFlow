@@ -13,42 +13,48 @@ import {
   addDocumentToCase,
   getActiveCaseId,
   getCaseFileById,
-  getRequiredDocumentCategories,
+  getDocumentCompletionSummary,
+  getDocumentTypeGroups,
   hasRequiredDocuments,
+  hasRequiredFields,
   markReadyForReview,
   removeDocumentFromCase,
 } from '../lib/caseFiles'
 import { extractDocumentText } from '../lib/api'
 import { hasFirebaseConfig, uploadCaseDocumentFile } from '../lib/firebase'
 
-const allCategories = [
-  'Passport / ID',
-  'Bank Statements',
-  'Source of Wealth (SoW)',
-  'Utility Bill',
-  'Tax Residency Bill',
-]
-
 function getCategoryOptionLabel(category, documents = []) {
-  const isUploaded = documents.some((document) => document.category === category)
-  return `${category} — ${isUploaded ? 'Uploaded' : 'Not Uploaded'}`
+  const uploadedCount = documents.filter((document) => document.category === category).length
+  return uploadedCount > 0
+    ? `${category} (Uploaded ${uploadedCount})`
+    : `${category} (Not Uploaded)`
 }
 
 export default function Vault({ onNavigate }) {
   const [activeCase, setActiveCase] = useState(null)
   const [uploading, setUploading] = useState(false)
   const [message, setMessage] = useState('')
-  const [selectedCategory, setSelectedCategory] = useState(allCategories[0])
+  const [selectedCategory, setSelectedCategory] = useState('')
   const [loadingCase, setLoadingCase] = useState(true)
+  const documentTypeGroups = useMemo(() => getDocumentTypeGroups(activeCase), [activeCase?.occupation, activeCase?.id])
+  const allCategories = useMemo(() => documentTypeGroups.flatMap((group) => group.options), [documentTypeGroups])
 
-  const requiredCategories = getRequiredDocumentCategories()
+  const checklistSummary = useMemo(() => {
+    if (!activeCase) {
+      return {
+        entries: [],
+        requiredTotal: 0,
+        requiredCompletedCount: 0,
+        allRequiredComplete: false,
+      }
+    }
+    return getDocumentCompletionSummary(activeCase)
+  }, [activeCase])
 
   const completeness = useMemo(() => {
-    if (!activeCase) return 0
-    const present = new Set((activeCase.documents || []).map((doc) => doc.category))
-    const completed = requiredCategories.filter((category) => present.has(category)).length
-    return Math.round((completed / requiredCategories.length) * 100)
-  }, [activeCase, requiredCategories])
+    if (!activeCase || checklistSummary.requiredTotal === 0) return 0
+    return Math.round((checklistSummary.requiredCompletedCount / checklistSummary.requiredTotal) * 100)
+  }, [activeCase, checklistSummary])
 
   const refreshActiveCase = async () => {
     const caseId = getActiveCaseId()
@@ -61,6 +67,16 @@ export default function Vault({ onNavigate }) {
     refreshActiveCase()
   }, [])
 
+  useEffect(() => {
+    if (allCategories.length === 0) {
+      setSelectedCategory('')
+      return
+    }
+    if (!allCategories.includes(selectedCategory)) {
+      setSelectedCategory(allCategories[0])
+    }
+  }, [allCategories, selectedCategory])
+
   const processFiles = async (files) => {
     if (!activeCase) {
       setMessage('Select a case from Case Files before uploading documents.')
@@ -70,50 +86,59 @@ export default function Vault({ onNavigate }) {
     if (!files.length) {
       return
     }
+    if (!selectedCategory) {
+      setMessage('Select a required document type before uploading.')
+      return
+    }
 
     setUploading(true)
 
-    let extractedDocuments = []
     try {
-      const extractionResult = await extractDocumentText(files)
-      extractedDocuments = extractionResult.documents || []
-    } catch (error) {
-      console.warn('Unable to extract document text during upload:', error)
-    }
-
-    for (const [index, file] of files.entries()) {
-      const extracted = extractedDocuments[index] || {}
-      const documentId = `${file.name}-${file.size}-${file.lastModified}`
-      let storageMeta = {}
-
-      if (hasFirebaseConfig) {
-        try {
-          storageMeta = await uploadCaseDocumentFile(activeCase.id, documentId, file)
-        } catch (error) {
-          console.error('Error uploading document to Firebase Storage:', error)
-          setUploading(false)
-          setMessage(`Unable to upload ${file.name} to Firebase Storage. Check your Firebase Storage setup.`)
-          return
-        }
+      let extractedDocuments = []
+      try {
+        const extractionResult = await extractDocumentText(files)
+        extractedDocuments = extractionResult.documents || []
+      } catch (error) {
+        console.warn('Unable to extract document text during upload:', error)
       }
 
-      await addDocumentToCase(activeCase.id, {
-        id: documentId,
-        name: file.name,
-        size: `${(file.size / 1024 / 1024).toFixed(1)} MB`,
-        category: selectedCategory,
-        uploader: 'RM Uploaded',
-        extractedText: extracted.text || '',
-        mimeType: extracted.mimeType || file.type || '',
-        storagePath: storageMeta.storagePath || null,
-        downloadURL: storageMeta.downloadURL || null,
-        uploadedAt: new Date().toISOString(),
-      })
-    }
+      for (const [index, file] of files.entries()) {
+        const extracted = extractedDocuments[index] || {}
+        const documentId = `${file.name}-${file.size}-${file.lastModified}`
+        let storageMeta = {}
 
-    await refreshActiveCase()
-    setUploading(false)
-    setMessage('Document uploaded. Case status updated based on completeness.')
+        if (hasFirebaseConfig) {
+          try {
+            storageMeta = await uploadCaseDocumentFile(activeCase.id, documentId, file)
+          } catch (error) {
+            console.error('Error uploading document to Firebase Storage:', error)
+            setMessage(`Unable to upload ${file.name} to Firebase Storage. Check your Firebase Storage setup.`)
+            return
+          }
+        }
+
+        await addDocumentToCase(activeCase.id, {
+          id: documentId,
+          name: file.name,
+          size: `${(file.size / 1024 / 1024).toFixed(1)} MB`,
+          category: selectedCategory,
+          uploader: 'RM Uploaded',
+          extractedText: extracted.text || '',
+          mimeType: extracted.mimeType || file.type || '',
+          storagePath: storageMeta.storagePath || null,
+          downloadURL: storageMeta.downloadURL || null,
+          uploadedAt: new Date().toISOString(),
+        })
+      }
+
+      await refreshActiveCase()
+      setMessage('Document uploaded. Case status updated based on completeness.')
+    } catch (error) {
+      console.error('Document upload flow failed:', error)
+      setMessage(error?.message ? `Upload failed: ${error.message}` : 'Upload failed unexpectedly. Check backend/Firebase logs.')
+    } finally {
+      setUploading(false)
+    }
   }
 
   const handleFileInput = async (e) => {
@@ -128,7 +153,7 @@ export default function Vault({ onNavigate }) {
       return
     }
 
-    if (!hasRequiredDocuments(activeCase)) {
+    if (!hasRequiredDocuments(activeCase) || !hasRequiredFields(activeCase)) {
       setMessage('Required documents are incomplete. Redirecting to Case Files.')
       onNavigate?.('cases')
       return
@@ -142,7 +167,7 @@ export default function Vault({ onNavigate }) {
     }
 
     await refreshActiveCase()
-    setMessage('Case submitted. Status is now Ready for Review.')
+    setMessage('Case submitted. Status is now Pending Review.')
     onNavigate?.('dashboard')
   }
 
@@ -182,8 +207,10 @@ export default function Vault({ onNavigate }) {
     )
   }
 
-  const requiredReady = hasRequiredDocuments(activeCase)
+  const requiredReady = checklistSummary.allRequiredComplete && hasRequiredFields(activeCase)
   const selectedCategoryUploaded = (activeCase.documents || []).some((document) => document.category === selectedCategory)
+  const uploadedDocumentTypes = Array.from(new Set((activeCase.documents || []).map((document) => document.category)))
+  const missingChecklistEntries = (checklistSummary.entries || []).filter((entry) => entry.required && entry.state !== 'complete')
 
   return (
     <div className="min-h-screen bg-surface pb-12">
@@ -214,20 +241,28 @@ export default function Vault({ onNavigate }) {
           <div className="bg-surface-container-lowest rounded-xl p-6 shadow-ambient">
             <h2 className="font-display text-lg font-bold text-on-surface mb-4">Required Categories</h2>
             <div className="space-y-3">
-              {requiredCategories.map((category) => {
-                const present = (activeCase.documents || []).some((doc) => doc.category === category)
+              {checklistSummary.entries.map((entry) => {
+                const tone = entry.state === 'complete'
+                  ? 'text-success'
+                  : entry.state === 'partial'
+                    ? 'text-warning'
+                    : 'text-error'
+                const label = entry.state === 'complete'
+                  ? 'Complete'
+                  : entry.state === 'partial'
+                    ? 'Partial'
+                    : 'Missing'
                 return (
-                  <div key={category} className="flex items-center justify-between p-3 rounded-lg bg-surface-container-low">
-                    <span className="text-sm text-on-surface">{category}</span>
-                    {present ? (
-                      <span className="inline-flex items-center gap-1 text-xs text-success">
-                        <CheckCircle2 className="w-4 h-4" /> Complete
+                  <div key={entry.id} className="p-3 rounded-lg bg-surface-container-low">
+                    <div className="flex items-center justify-between">
+                      <span className="text-sm text-on-surface">{entry.label}</span>
+                      <span className={`inline-flex items-center gap-1 text-xs ${tone}`}>
+                        {entry.state === 'complete' ? <CheckCircle2 className="w-4 h-4" /> : <AlertCircle className="w-4 h-4" />} {label}
                       </span>
-                    ) : (
-                      <span className="inline-flex items-center gap-1 text-xs text-error">
-                        <AlertCircle className="w-4 h-4" /> Missing
-                      </span>
-                    )}
+                    </div>
+                    {entry.critical && entry.state !== 'complete' ? (
+                      <p className="mt-2 text-xs text-error">{entry.details}</p>
+                    ) : null}
                   </div>
                 )
               })}
@@ -243,6 +278,40 @@ export default function Vault({ onNavigate }) {
               <div>
                 <label className="text-[10px] font-semibold text-on-surface-variant tracking-wider uppercase mb-2 block">Document Category</label>
                 <div className="space-y-3">
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                    <div className="rounded-xl border border-error/20 bg-error/5 px-3 py-3">
+                      <p className="text-xs font-semibold uppercase tracking-[0.14em] text-error mb-2">Still Needed</p>
+                      {missingChecklistEntries.length > 0 ? (
+                        <div className="space-y-2">
+                          {missingChecklistEntries.slice(0, 4).map((entry) => (
+                            <p key={entry.id} className="text-xs text-on-surface">
+                              {entry.label}: {entry.missingItems?.[0] || 'Missing required evidence'}
+                            </p>
+                          ))}
+                          {missingChecklistEntries.length > 4 ? (
+                            <p className="text-xs text-on-surface-variant">+{missingChecklistEntries.length - 4} more required categories</p>
+                          ) : null}
+                        </div>
+                      ) : (
+                        <p className="text-xs text-success">All required categories are complete.</p>
+                      )}
+                    </div>
+                    <div className="rounded-xl border border-success/20 bg-success/5 px-3 py-3">
+                      <p className="text-xs font-semibold uppercase tracking-[0.14em] text-success mb-2">Already Added</p>
+                      {uploadedDocumentTypes.length > 0 ? (
+                        <div className="space-y-2">
+                          {uploadedDocumentTypes.slice(0, 4).map((category) => (
+                            <p key={category} className="text-xs text-on-surface">{category}</p>
+                          ))}
+                          {uploadedDocumentTypes.length > 4 ? (
+                            <p className="text-xs text-on-surface-variant">+{uploadedDocumentTypes.length - 4} more document types</p>
+                          ) : null}
+                        </div>
+                      ) : (
+                        <p className="text-xs text-on-surface-variant">No document types uploaded yet.</p>
+                      )}
+                    </div>
+                  </div>
                   <select
                     value={selectedCategory}
                     onChange={(e) => setSelectedCategory(e.target.value)}
@@ -252,27 +321,32 @@ export default function Vault({ onNavigate }) {
                         : 'bg-surface-container border border-warning/30'
                     }`}
                   >
-                    {allCategories.map((category) => (
-                      <option key={category} value={category}>{category}</option>
+                    {documentTypeGroups.map((group) => (
+                      <optgroup key={group.label} label={group.label}>
+                        {group.options.map((category) => (
+                          <option key={category} value={category}>{getCategoryOptionLabel(category, activeCase.documents || [])}</option>
+                        ))}
+                      </optgroup>
                     ))}
                   </select>
-                  <div className="flex flex-wrap gap-2">
-                    {allCategories.map((category) => {
-                      const uploaded = (activeCase.documents || []).some((document) => document.category === category)
-                      return (
-                        <div
-                          key={category}
-                          className={`inline-flex items-center gap-2 rounded-full px-3 py-1.5 text-xs ${
-                            uploaded
-                              ? 'bg-success/10 text-success'
-                              : 'bg-surface-container text-on-surface-variant'
-                          }`}
-                        >
-                          <span className={`h-2 w-2 rounded-full ${uploaded ? 'bg-success' : 'bg-outline/50'}`} />
-                          <span>{category}</span>
-                        </div>
-                      )
-                    })}
+                  <div className="rounded-xl bg-surface-container-lowest px-3 py-2.5 text-xs text-on-surface-variant">
+                    <p className="font-medium text-on-surface mb-2">Uploaded document types ({uploadedDocumentTypes.length})</p>
+                    {uploadedDocumentTypes.length > 0 ? (
+                      <div className="flex flex-wrap gap-2">
+                        {uploadedDocumentTypes.slice(0, 10).map((category) => (
+                          <span key={category} className="inline-flex items-center rounded-full bg-success/10 px-2.5 py-1 text-xs text-success">
+                            {category}
+                          </span>
+                        ))}
+                        {uploadedDocumentTypes.length > 10 ? (
+                          <span className="inline-flex items-center rounded-full bg-surface-container px-2.5 py-1 text-xs text-on-surface-variant">
+                            +{uploadedDocumentTypes.length - 10} more
+                          </span>
+                        ) : null}
+                      </div>
+                    ) : (
+                      <p>No document types uploaded yet.</p>
+                    )}
                   </div>
                 </div>
               </div>
@@ -334,7 +408,7 @@ export default function Vault({ onNavigate }) {
             <p className={`mt-4 text-xs ${requiredReady ? 'text-success' : 'text-error'}`}>
               {requiredReady
                 ? 'All required document categories are complete. You can submit the case for review.'
-                : 'Required categories are still incomplete. Status cannot move to Ready for Review yet.'}
+                : 'Required categories/profile are incomplete. Status cannot move to Pending Review yet.'}
             </p>
           </div>
         </div>

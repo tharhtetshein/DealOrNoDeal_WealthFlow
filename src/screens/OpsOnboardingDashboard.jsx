@@ -1,516 +1,352 @@
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import {
+  AlertTriangle,
+  CheckCircle2,
+  Clock3,
+  FileText,
+  FolderOpen,
   Search,
   Upload,
-  CheckCircle2,
-  AlertTriangle,
-  FileText,
-  Edit2,
-  RefreshCw,
-  Flag,
-  Plus,
-  AlertCircle,
-  Zap,
-  Eye,
-  Download,
-  Save,
-  X,
-  Clock,
+  UserCheck,
 } from 'lucide-react'
+import {
+  CASE_STATUS,
+  getAllCaseFiles,
+  getDocumentCompletionSummary,
+  getReadinessScore,
+  hasFreshAiAnalysis,
+  hasRequiredFields,
+  markReadyForReview,
+  setActiveCaseId,
+} from '../lib/caseFiles'
 
-const cases = [
-  {
-    id: 'WF-1102',
-    clientName: 'Ariella Tan',
-    status: 'Draft',
-    readinessScore: 45,
-    missingDocs: ['Passport', 'Tax Returns 2024'],
-    dataIssues: ['Income source unclear'],
-    lastUpdated: '2026-04-21',
-    priority: 'high',
-  },
-  {
-    id: 'WF-1108',
-    clientName: 'Marcus Lee',
-    status: 'In Review',
-    readinessScore: 78,
-    missingDocs: [],
-    dataIssues: ['Business registration date mismatch'],
-    lastUpdated: '2026-04-23',
-    priority: 'high',
-  },
-  {
-    id: 'WF-1113',
-    clientName: 'Isabelle Wong',
-    status: 'Ready for Review',
-    readinessScore: 95,
-    missingDocs: [],
-    dataIssues: [],
-    lastUpdated: '2026-04-22',
-    priority: 'normal',
-  },
-  {
-    id: 'WF-1116',
-    clientName: 'Daniel Koh',
-    status: 'Escalated',
-    readinessScore: 72,
-    missingDocs: [],
-    dataIssues: ['Wealth source narrative incomplete'],
-    lastUpdated: '2026-04-23',
-    priority: 'high',
-  },
-  {
-    id: 'WF-1120',
-    clientName: 'Richard Lim',
-    status: 'Draft',
-    readinessScore: 35,
-    missingDocs: ['Payslips', 'Bank Statements'],
-    dataIssues: ['Employment history incomplete', 'Income inconsistency'],
-    lastUpdated: '2026-04-20',
-    priority: 'high',
-  },
-  {
-    id: 'WF-1124',
-    clientName: 'Celine Ong',
-    status: 'In Review',
-    readinessScore: 88,
-    missingDocs: [],
-    dataIssues: [],
-    lastUpdated: '2026-04-23',
-    priority: 'normal',
-  },
-]
-
-const documentChecklist = {
-  'WF-1102': [
-    { name: 'Passport / ID Document', uploaded: false, required: true },
-    { name: 'Recent Payslips - 3 months', uploaded: true, required: true },
-    { name: 'Tax Returns - 2 years', uploaded: false, required: true },
-    { name: 'Bank Statements - 6 months', uploaded: true, required: true },
-    { name: 'Bank Reference Letter', uploaded: false, required: true },
-    { name: 'CV / Resume', uploaded: true, required: true },
-  ],
-  'WF-1108': [
-    { name: 'Passport / ID Document', uploaded: true, required: true },
-    { name: 'Recent Payslips - 3 months', uploaded: true, required: true },
-    { name: 'Tax Returns - 2 years', uploaded: true, required: true },
-    { name: 'Bank Statements - 6 months', uploaded: true, required: true },
-    { name: 'Bank Reference Letter', uploaded: true, required: true },
-    { name: 'Business Registration', uploaded: true, required: false },
-  ],
+function formatDateTime(value) {
+  if (!value) return '--'
+  return new Date(value).toLocaleString([], {
+    year: 'numeric',
+    month: 'numeric',
+    day: 'numeric',
+    hour: 'numeric',
+    minute: '2-digit',
+  })
 }
 
-const extractedData = {
-  'WF-1102': {
-    fullName: 'Ariella Tan',
-    occupation: 'Software Engineer',
-    nationality: 'Singaporean',
-    estimatedWealth: 'SGD 500,000',
-    primarySourceOfWealth: 'Employment - Technology Sector',
-    employmentHistory: '2018-Present: ABC Tech Pte Ltd',
-  },
-  'WF-1108': {
-    fullName: 'Marcus Lee',
-    occupation: 'Business Owner',
-    nationality: 'Malaysian',
-    estimatedWealth: 'SGD 1,200,000',
-    primarySourceOfWealth: 'Self-Employment - Trading Business',
-    employmentHistory: '2015-Present: Marcus Lee Trading Corp',
-    businessRegDate: '2014-12-15',
-  },
+function statusTone(status) {
+  if (status === CASE_STATUS.PENDING_REVIEW) return 'bg-success/12 text-success'
+  if (status === CASE_STATUS.MISSING_DOCUMENTS) return 'bg-error/10 text-error'
+  if (status === CASE_STATUS.UNDER_REVIEW) return 'bg-tertiary/12 text-tertiary'
+  if (status === CASE_STATUS.ESCALATED) return 'bg-error/15 text-error'
+  return 'bg-surface-container-high text-on-surface-variant'
 }
 
-// Helper Functions
+function readinessTone(score) {
+  if (score >= 85) return 'text-success'
+  if (score >= 50) return 'text-warning'
+  return 'text-error'
+}
 
-function getStatusBadge(status) {
-  const badges = {
-    Draft: 'bg-surface-100 text-surface-700',
-    'In Review': 'bg-primary-100 text-primary-700',
-    'Ready for Review': 'bg-success-100 text-success-700',
-    Escalated: 'bg-error-100 text-error-700',
+function getOpsIssues(caseFile, readiness, completion) {
+  const issues = []
+  if (!hasRequiredFields(caseFile)) issues.push('Profile is incomplete or below minimum net worth.')
+  completion.missingRequiredDocuments.forEach((item) => {
+    issues.push(`Missing ${item.label}.`)
+  })
+  completion.needsReviewDocuments.forEach((item) => {
+    issues.push(`${item.label} needs review.`)
+  })
+  if ((caseFile.documents || []).length > 0 && !hasFreshAiAnalysis(caseFile)) {
+    issues.push('AI analysis is not current after the latest upload.')
   }
-  return badges[status] || 'bg-surface-100 text-surface-700'
-}
-
-function formatLabel(key) {
-  return key
-    .replace(/([A-Z])/g, ' $1')
-    .replace(/^./, (str) => str.toUpperCase())
-    .trim()
-}
-
-// Metric Card Component
-
-function MetricCard({ label, value, icon, color }) {
-  const bgColors = {
-    error: 'bg-error-50',
-    warning: 'bg-warning-50',
-    success: 'bg-success-50',
-    primary: 'bg-primary-50',
+  if (readiness < 100 && issues.length === 0) {
+    issues.push('Case is not fully ready for compliance handoff.')
   }
+  return issues
+}
 
+function MetricCard({ label, value, icon: Icon, tone = 'text-on-surface' }) {
   return (
-    <div className={`${bgColors[color]} rounded-lg border border-surface-200 p-6`}>
-      <div className="flex items-center justify-between">
-        <div>
-          <p className="text-sm text-surface-600 font-medium">{label}</p>
-          <p className="text-3xl font-bold text-surface-900 mt-2">{value}</p>
-        </div>
-        <div className="p-3 bg-surface-100 rounded-lg">{icon}</div>
+    <div className="rounded-2xl border border-outline/10 bg-surface-container-lowest p-5 shadow-ambient">
+      <div className="mb-4 flex h-10 w-10 items-center justify-center rounded-xl bg-surface">
+        <Icon className={`h-5 w-5 ${tone}`} />
       </div>
+      <p className={`font-display text-3xl font-bold ${tone}`}>{value}</p>
+      <p className="mt-2 text-sm text-on-surface-variant">{label}</p>
     </div>
   )
 }
 
-// Main Component
-
-export default function OpsOnboardingDashboard() {
-  const [selectedCaseId, setSelectedCaseId] = useState('WF-1102')
+export default function OpsOnboardingDashboard({ onNavigate }) {
+  const [cases, setCases] = useState([])
+  const [selectedCaseId, setSelectedCaseId] = useState('')
   const [statusFilter, setStatusFilter] = useState('All')
   const [searchQuery, setSearchQuery] = useState('')
-  const [editMode, setEditMode] = useState(false)
-  const [editData, setEditData] = useState(null)
+  const [message, setMessage] = useState('')
+  const [loading, setLoading] = useState(true)
 
-  const selectedCase = cases.find((c) => c.id === selectedCaseId)
-  const caseDocChecklist = documentChecklist[selectedCaseId] || []
-  const caseExtractedData = extractedData[selectedCaseId] || {}
+  const loadCases = async () => {
+    setLoading(true)
+    const records = await getAllCaseFiles()
+    const enriched = await Promise.all(records.map(async (caseFile) => {
+      const readiness = await getReadinessScore(caseFile.id)
+      const completion = getDocumentCompletionSummary(caseFile)
+      return {
+        ...caseFile,
+        readiness: readiness?.percentage ?? 0,
+        readinessBreakdown: readiness,
+        completion,
+        opsIssues: getOpsIssues(caseFile, readiness?.percentage ?? 0, completion),
+      }
+    }))
+    setCases(enriched)
+    setSelectedCaseId((current) => current || enriched[0]?.id || '')
+    setLoading(false)
+  }
 
-  // Compute metrics
-  const metrics = useMemo(() => {
-    const withMissingDocs = cases.filter((c) => c.missingDocs.length > 0).length
-    const withDataIssues = cases.filter((c) => c.dataIssues.length > 0).length
-    const notReady = cases.filter((c) => c.readinessScore < 75).length
-    const avgReadiness = Math.round(cases.reduce((sum, c) => sum + c.readinessScore, 0) / cases.length)
-
-    return {
-      casesWithMissingDocs: withMissingDocs,
-      casesWithDataIssues: withDataIssues,
-      casesNotReady: notReady,
-      averageReadiness: avgReadiness,
-    }
+  useEffect(() => {
+    loadCases()
   }, [])
 
-  // Filter cases
   const filteredCases = useMemo(() => {
-    let result = cases
+    const query = searchQuery.trim().toLowerCase()
+    return cases
+      .filter((caseFile) => statusFilter === 'All' || caseFile.status === statusFilter)
+      .filter((caseFile) => !query
+        || String(caseFile.clientName || '').toLowerCase().includes(query)
+        || String(caseFile.id || '').toLowerCase().includes(query))
+      .sort((a, b) => b.opsIssues.length - a.opsIssues.length || b.readiness - a.readiness)
+  }, [cases, searchQuery, statusFilter])
 
-    if (statusFilter !== 'All') {
-      result = result.filter((c) => c.status === statusFilter)
+  const selectedCase = cases.find((item) => item.id === selectedCaseId) || filteredCases[0] || null
+
+  const metrics = useMemo(() => {
+    const missingDocs = cases.filter((item) => item.completion.missingRequiredDocuments.length > 0).length
+    const staleAi = cases.filter((item) => (item.documents || []).length > 0 && !hasFreshAiAnalysis(item)).length
+    const ready = cases.filter((item) => item.readiness === 100).length
+    const average = cases.length
+      ? Math.round(cases.reduce((sum, item) => sum + item.readiness, 0) / cases.length)
+      : 0
+
+    return { missingDocs, staleAi, ready, average }
+  }, [cases])
+
+  const handleOpenDocuments = (caseId) => {
+    setActiveCaseId(caseId)
+    onNavigate?.('documents')
+  }
+
+  const handleOpenCase = (caseId) => {
+    setActiveCaseId(caseId)
+    onNavigate?.('case-detail')
+  }
+
+  const handleMarkReady = async (caseId) => {
+    const result = await markReadyForReview(caseId)
+    if (!result.ok) {
+      setMessage(result.reason)
+      return
     }
-
-    if (searchQuery) {
-      result = result.filter((c) => c.clientName.toLowerCase().includes(searchQuery.toLowerCase()) || c.id.includes(searchQuery))
-    }
-
-    // Prioritize cases with issues
-    return result.sort((a, b) => {
-      const aIssues = a.missingDocs.length + a.dataIssues.length
-      const bIssues = b.missingDocs.length + b.dataIssues.length
-      return bIssues - aIssues
-    })
-  }, [statusFilter, searchQuery])
-
-  const handleEditClick = () => {
-    setEditData({ ...caseExtractedData })
-    setEditMode(true)
-  }
-
-  const handleSaveEdits = () => {
-    // In real app, would call API to save
-    console.log('Saving extracted data:', editData)
-    setEditMode(false)
-    setEditData(null)
-  }
-
-  const handleCancelEdits = () => {
-    setEditMode(false)
-    setEditData(null)
-  }
-
-  const handleRegenSoW = () => {
-    // In real app, would call API to regenerate SoW
-    console.log('Regenerating SoW for case:', selectedCaseId)
-  }
-
-  const handleMarkReady = () => {
-    // In real app, would update case status
-    console.log('Marking case as ready:', selectedCaseId)
+    setMessage('Case moved to Pending Review.')
+    await loadCases()
   }
 
   return (
-    <div className="space-y-6">
-      {/* Header */}
-      <div>
-        <h1 className="text-3xl font-bold text-surface-950">Onboarding Quality & Issue Resolution</h1>
-        <p className="text-surface-600 mt-2">Identify and resolve issues preventing cases from compliance readiness</p>
-      </div>
-
-      {/* Metrics Grid */}
-      <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
-        <MetricCard
-          label="Cases with Missing Docs"
-          value={metrics.casesWithMissingDocs}
-          icon={<Upload className="text-error-500" size={24} />}
-          color="error"
-        />
-        <MetricCard
-          label="Cases with Data Issues"
-          value={metrics.casesWithDataIssues}
-          icon={<AlertTriangle className="text-warning-500" size={24} />}
-          color="warning"
-        />
-        <MetricCard
-          label="Cases Not Ready (<75%)"
-          value={metrics.casesNotReady}
-          icon={<AlertCircle className="text-warning-600" size={24} />}
-          color="warning"
-        />
-        <MetricCard
-          label="Average Readiness"
-          value={`${metrics.averageReadiness}%`}
-          icon={<CheckCircle2 className="text-success-500" size={24} />}
-          color="success"
-        />
-      </div>
-
-      {/* Main Content - Case List and Detail */}
-      <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-        {/* Case List */}
-        <div className="lg:col-span-1">
-          <div className="bg-surface-0 rounded-lg border border-surface-200 overflow-hidden">
-            {/* Search Bar */}
-            <div className="p-4 border-b border-surface-200">
-              <div className="relative">
-                <Search className="absolute left-3 top-2.5 text-surface-400" size={18} />
-                <input
-                  type="text"
-                  placeholder="Search by name or ID"
-                  value={searchQuery}
-                  onChange={(e) => setSearchQuery(e.target.value)}
-                  className="w-full pl-10 pr-4 py-2 text-sm border border-surface-200 rounded-md focus:outline-none focus:ring-2 focus:ring-primary-500"
-                />
-              </div>
-            </div>
-
-            {/* Status Filter */}
-            <div className="p-4 border-b border-surface-200 flex flex-wrap gap-2">
-              {['All', 'Draft', 'In Review', 'Ready for Review'].map((status) => (
-                <button
-                  key={status}
-                  onClick={() => setStatusFilter(status)}
-                  className={`px-3 py-1 rounded-full text-sm font-medium transition-colors ${
-                    statusFilter === status
-                      ? 'bg-primary-500 text-white'
-                      : 'bg-surface-100 text-surface-700 hover:bg-surface-200'
-                  }`}
-                >
-                  {status}
-                </button>
-              ))}
-            </div>
-
-            {/* Case Items */}
-            <div className="overflow-y-auto max-h-[500px]">
-              {filteredCases.map((caseItem) => {
-                const issueCount = caseItem.missingDocs.length + caseItem.dataIssues.length
-                return (
-                  <button
-                    key={caseItem.id}
-                    onClick={() => setSelectedCaseId(caseItem.id)}
-                    className={`w-full text-left p-4 border-b border-surface-100 transition-colors hover:bg-surface-50 ${
-                      selectedCaseId === caseItem.id ? 'bg-primary-50 border-l-4 border-l-primary-500' : ''
-                    }`}
-                  >
-                    <div className="flex items-start justify-between mb-2">
-                      <div>
-                        <p className="font-semibold text-surface-900">{caseItem.clientName}</p>
-                        <p className="text-xs text-surface-500">{caseItem.id}</p>
-                      </div>
-                      {caseItem.priority === 'high' && <Flag className="text-error-500" size={16} />}
-                    </div>
-                    <div className="flex items-center justify-between mb-2">
-                      <span className={`text-xs font-medium px-2 py-1 rounded-full ${getStatusBadge(caseItem.status)}`}>
-                        {caseItem.status}
-                      </span>
-                      <span className="text-xs text-surface-600">{caseItem.readinessScore}%</span>
-                    </div>
-                    {issueCount > 0 && (
-                      <div className="flex items-center text-xs text-error-600">
-                        <AlertTriangle size={14} className="mr-1" />
-                        {issueCount} issue{issueCount > 1 ? 's' : ''}
-                      </div>
-                    )}
-                  </button>
-                )
-              })}
-            </div>
-          </div>
+    <div className="min-h-screen bg-surface p-8 pb-10">
+      <div className="max-w-7xl mx-auto space-y-6">
+        <div>
+          <p className="mb-2 text-xs font-semibold uppercase tracking-[0.24em] text-primary">Operations Workspace</p>
+          <h1 className="font-display text-4xl font-bold text-on-surface">Case Readiness Control</h1>
+          <p className="mt-2 text-on-surface-variant">Resolve profile, document, and AI freshness gaps before compliance review.</p>
         </div>
 
-        {/* Case Detail Panel */}
-        {selectedCase && (
-          <div className="lg:col-span-2 space-y-6">
-            {/* Case Header */}
-            <div className="bg-surface-0 rounded-lg border border-surface-200 p-6">
-              <div className="flex items-start justify-between mb-4">
-                <div>
-                  <h2 className="text-2xl font-bold text-surface-900">{selectedCase.clientName}</h2>
-                  <p className="text-surface-600 text-sm mt-1">{selectedCase.id}</p>
-                </div>
-                <div className="text-right">
-                  <p className="text-3xl font-bold text-primary-600">{selectedCase.readinessScore}%</p>
-                  <p className="text-xs text-surface-600">Readiness Score</p>
-                </div>
-              </div>
-              <div className="flex items-center justify-between pt-4 border-t border-surface-200">
-                <span className={`text-sm font-medium px-3 py-1 rounded-full ${getStatusBadge(selectedCase.status)}`}>
-                  {selectedCase.status}
-                </span>
-                <div className="flex gap-2">
-                  {selectedCase.status !== 'Escalated' && selectedCase.readinessScore >= 75 && (
-                    <button
-                      onClick={handleMarkReady}
-                      className="flex items-center gap-2 px-4 py-2 bg-success-500 text-white rounded-lg hover:bg-success-600 transition-colors text-sm font-medium"
-                    >
-                      <CheckCircle2 size={16} />
-                      Mark as Ready
-                    </button>
-                  )}
-                </div>
-              </div>
-            </div>
+        {message ? (
+          <div className="rounded-2xl border border-outline/10 bg-surface-container-lowest px-5 py-3 text-sm text-on-surface-variant shadow-ambient">
+            {message}
+          </div>
+        ) : null}
 
-            {/* Document Checklist */}
-            <div className="bg-surface-0 rounded-lg border border-surface-200 p-6">
-              <div className="flex items-center justify-between mb-4">
-                <h3 className="text-lg font-semibold text-surface-900 flex items-center gap-2">
-                  <FileText size={20} />
-                  Document Checklist
-                </h3>
-                <span className="text-xs font-medium text-surface-600">
-                  {caseDocChecklist.filter((d) => d.uploaded).length}/{caseDocChecklist.length}
-                </span>
+        <div className="grid grid-cols-1 gap-4 md:grid-cols-4">
+          <MetricCard label="Missing Document Cases" value={metrics.missingDocs} icon={Upload} tone="text-error" />
+          <MetricCard label="AI Refresh Needed" value={metrics.staleAi} icon={Clock3} tone="text-warning" />
+          <MetricCard label="Ready for Handoff" value={metrics.ready} icon={CheckCircle2} tone="text-success" />
+          <MetricCard label="Average Readiness" value={`${metrics.average}%`} icon={UserCheck} tone="text-primary" />
+        </div>
+
+        <div className="grid grid-cols-1 gap-6 lg:grid-cols-[420px_minmax(0,1fr)]">
+          <section className="rounded-3xl border border-outline/10 bg-surface-container-lowest shadow-ambient">
+            <div className="border-b border-outline/10 p-5">
+              <h2 className="font-display text-xl font-bold text-on-surface">Work Queue</h2>
+              <p className="mt-1 text-sm text-on-surface-variant">Cases sorted by operational issues first.</p>
+            </div>
+            <div className="space-y-4 border-b border-outline/10 p-5">
+              <div className="relative">
+                <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-on-surface-variant" />
+                <input
+                  value={searchQuery}
+                  onChange={(event) => setSearchQuery(event.target.value)}
+                  placeholder="Search client or case ID"
+                  className="w-full rounded-xl border border-outline/15 bg-surface py-2.5 pl-10 pr-4 text-sm text-on-surface focus:outline-none focus:ring-2 focus:ring-primary/20"
+                />
               </div>
-              <div className="space-y-3">
-                {caseDocChecklist.map((doc, idx) => (
-                  <div key={idx} className="flex items-center justify-between p-3 bg-surface-50 rounded-lg border border-surface-100">
-                    <div className="flex items-center gap-3 flex-1">
-                      {doc.uploaded ? (
-                        <CheckCircle2 className="text-success-500 flex-shrink-0" size={18} />
-                      ) : (
-                        <div className="w-5 h-5 border-2 border-surface-300 rounded flex-shrink-0" />
-                      )}
-                      <span className={`text-sm ${doc.uploaded ? 'text-surface-700' : 'text-surface-600'}`}>
-                        {doc.name}
-                        {doc.required && <span className="text-error-500 ml-1">*</span>}
-                      </span>
-                    </div>
-                    {!doc.uploaded && (
-                      <button className="flex items-center gap-1 text-xs text-primary-600 hover:text-primary-700 font-medium">
-                        <Upload size={14} />
-                        Upload
-                      </button>
-                    )}
-                  </div>
+              <div className="flex flex-wrap gap-2">
+                {['All', CASE_STATUS.DRAFT, CASE_STATUS.MISSING_DOCUMENTS, CASE_STATUS.PENDING_REVIEW, CASE_STATUS.UNDER_REVIEW].map((status) => (
+                  <button
+                    key={status}
+                    onClick={() => setStatusFilter(status)}
+                    className={`rounded-full px-3 py-1.5 text-xs font-semibold transition-colors ${
+                      statusFilter === status ? 'bg-primary text-white' : 'bg-surface text-on-surface-variant hover:text-on-surface'
+                    }`}
+                  >
+                    {status}
+                  </button>
                 ))}
               </div>
             </div>
 
-            {/* Extracted Data */}
-            <div className="bg-surface-0 rounded-lg border border-surface-200 p-6">
-              <div className="flex items-center justify-between mb-4">
-                <h3 className="text-lg font-semibold text-surface-900 flex items-center gap-2">
-                  <Eye size={20} />
-                  Extracted Client Data
-                </h3>
-                <div className="flex gap-2">
-                  {editMode ? (
-                    <>
-                      <button
-                        onClick={handleSaveEdits}
-                        className="flex items-center gap-1 text-xs text-success-600 hover:text-success-700 font-medium"
-                      >
-                        <Save size={14} />
-                        Save
-                      </button>
-                      <button
-                        onClick={handleCancelEdits}
-                        className="flex items-center gap-1 text-xs text-surface-600 hover:text-surface-700 font-medium"
-                      >
-                        <X size={14} />
-                        Cancel
-                      </button>
-                    </>
+            <div className="max-h-[620px] overflow-y-auto p-4">
+              {loading ? (
+                <p className="p-4 text-sm text-on-surface-variant">Loading cases...</p>
+              ) : filteredCases.length === 0 ? (
+                <p className="p-4 text-sm text-on-surface-variant">No cases match this filter.</p>
+              ) : filteredCases.map((caseFile) => (
+                <button
+                  key={caseFile.id}
+                  onClick={() => setSelectedCaseId(caseFile.id)}
+                  className={`mb-3 w-full rounded-2xl border p-4 text-left transition-colors ${
+                    selectedCase?.id === caseFile.id ? 'border-primary/30 bg-primary/5' : 'border-outline/10 bg-surface hover:border-primary/20'
+                  }`}
+                >
+                  <div className="flex items-start justify-between gap-3">
+                    <div>
+                      <p className="font-semibold text-on-surface">{caseFile.clientName || 'Unnamed Client'}</p>
+                      <p className="mt-1 text-xs uppercase tracking-[0.16em] text-on-surface-variant">{caseFile.id}</p>
+                    </div>
+                    <span className={`rounded-full px-2.5 py-1 text-xs font-semibold ${statusTone(caseFile.status)}`}>
+                      {caseFile.status}
+                    </span>
+                  </div>
+                  <div className="mt-4 flex items-center gap-3">
+                    <div className="h-2 flex-1 overflow-hidden rounded-full bg-surface-container-high">
+                      <div className="h-full rounded-full bg-primary" style={{ width: `${caseFile.readiness}%` }} />
+                    </div>
+                    <span className={`text-sm font-bold ${readinessTone(caseFile.readiness)}`}>{caseFile.readiness}%</span>
+                  </div>
+                  <p className={`mt-3 text-xs font-medium ${caseFile.opsIssues.length ? 'text-warning' : 'text-success'}`}>
+                    {caseFile.opsIssues.length ? `${caseFile.opsIssues.length} operational item${caseFile.opsIssues.length > 1 ? 's' : ''}` : 'Ready from Ops view'}
+                  </p>
+                </button>
+              ))}
+            </div>
+          </section>
+
+          <section className="rounded-3xl border border-outline/10 bg-surface-container-lowest p-6 shadow-ambient">
+            {selectedCase ? (
+              <div className="space-y-6">
+                <div className="flex flex-wrap items-start justify-between gap-4">
+                  <div>
+                    <p className="text-xs font-semibold uppercase tracking-[0.2em] text-primary">Selected Case</p>
+                    <h2 className="mt-2 font-display text-3xl font-bold text-on-surface">{selectedCase.clientName || 'Unnamed Client'}</h2>
+                    <p className="mt-1 text-sm text-on-surface-variant">{selectedCase.id} | Updated {formatDateTime(selectedCase.updatedAt)}</p>
+                  </div>
+                  <div className="text-right">
+                    <p className={`font-display text-4xl font-bold ${readinessTone(selectedCase.readiness)}`}>{selectedCase.readiness}%</p>
+                    <p className="text-xs uppercase tracking-[0.14em] text-on-surface-variant">Readiness</p>
+                  </div>
+                </div>
+
+                <div className="grid grid-cols-1 gap-4 md:grid-cols-3">
+                  <div className="rounded-2xl bg-surface p-4">
+                    <p className="text-xs uppercase tracking-[0.16em] text-on-surface-variant">Profile</p>
+                    <p className={`mt-3 text-sm font-semibold ${hasRequiredFields(selectedCase) ? 'text-success' : 'text-error'}`}>
+                      {hasRequiredFields(selectedCase) ? 'Complete' : 'Incomplete'}
+                    </p>
+                  </div>
+                  <div className="rounded-2xl bg-surface p-4">
+                    <p className="text-xs uppercase tracking-[0.16em] text-on-surface-variant">Documents</p>
+                    <p className="mt-3 text-sm font-semibold text-on-surface">
+                      {selectedCase.completion.requiredCompletedCount} / {selectedCase.completion.requiredTotal}
+                    </p>
+                  </div>
+                  <div className="rounded-2xl bg-surface p-4">
+                    <p className="text-xs uppercase tracking-[0.16em] text-on-surface-variant">AI Analysis</p>
+                    <p className={`mt-3 text-sm font-semibold ${hasFreshAiAnalysis(selectedCase) ? 'text-success' : 'text-warning'}`}>
+                      {hasFreshAiAnalysis(selectedCase) ? 'Current' : 'Needs refresh'}
+                    </p>
+                  </div>
+                </div>
+
+                <div className="rounded-2xl border border-outline/10 bg-surface p-5">
+                  <div className="mb-4 flex items-center gap-2">
+                    <FileText className="h-4 w-4 text-primary" />
+                    <h3 className="font-semibold text-on-surface">Required Documents</h3>
+                  </div>
+                  <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
+                    {selectedCase.completion.requiredDocuments.map((doc) => (
+                      <div key={doc.label} className="flex items-start gap-3 rounded-xl bg-surface-container-lowest p-3">
+                        {doc.status === 'uploaded' ? (
+                          <CheckCircle2 className="mt-0.5 h-4 w-4 shrink-0 text-success" />
+                        ) : (
+                          <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-warning" />
+                        )}
+                        <div>
+                          <p className="text-sm font-medium text-on-surface">{doc.label}</p>
+                          <p className="text-xs text-on-surface-variant">{doc.status === 'uploaded' ? 'Uploaded' : doc.status === 'needs_review' ? 'Needs review' : 'Missing'}</p>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+
+                <div className="rounded-2xl border border-outline/10 bg-surface p-5">
+                  <div className="mb-4 flex items-center gap-2">
+                    <AlertTriangle className="h-4 w-4 text-warning" />
+                    <h3 className="font-semibold text-on-surface">Operations To Resolve</h3>
+                  </div>
+                  {selectedCase.opsIssues.length > 0 ? (
+                    <div className="space-y-2">
+                      {selectedCase.opsIssues.map((issue) => (
+                        <p key={issue} className="rounded-xl bg-warning/5 px-4 py-3 text-sm text-on-surface">{issue}</p>
+                      ))}
+                    </div>
                   ) : (
-                    <button
-                      onClick={handleEditClick}
-                      className="flex items-center gap-1 text-xs text-primary-600 hover:text-primary-700 font-medium"
-                    >
-                      <Edit2 size={14} />
-                      Edit
-                    </button>
+                    <p className="rounded-xl bg-success/5 px-4 py-3 text-sm font-medium text-success">No operational blockers. Case is ready for compliance handling.</p>
                   )}
                 </div>
+
+                <div className="flex flex-wrap gap-3">
+                  <button
+                    onClick={() => handleOpenDocuments(selectedCase.id)}
+                    className="inline-flex items-center gap-2 rounded-xl bg-primary px-4 py-2.5 text-sm font-semibold text-white hover:bg-primary/90"
+                  >
+                    <FolderOpen className="h-4 w-4" />
+                    Manage Documents
+                  </button>
+                  <button
+                    onClick={() => handleOpenCase(selectedCase.id)}
+                    className="inline-flex items-center gap-2 rounded-xl border border-outline/20 bg-surface px-4 py-2.5 text-sm font-semibold text-on-surface hover:border-primary/30"
+                  >
+                    <FileText className="h-4 w-4" />
+                    Open Case Workspace
+                  </button>
+                  <button
+                    onClick={() => handleMarkReady(selectedCase.id)}
+                    disabled={selectedCase.readiness < 100}
+                    className="inline-flex items-center gap-2 rounded-xl bg-success px-4 py-2.5 text-sm font-semibold text-white hover:bg-success/90 disabled:cursor-not-allowed disabled:opacity-50"
+                  >
+                    <CheckCircle2 className="h-4 w-4" />
+                    Move to Pending Review
+                  </button>
+                </div>
               </div>
-
-              {editMode && editData ? (
-                <div className="space-y-3">
-                  {Object.entries(editData).map(([key, value]) => (
-                    <div key={key}>
-                      <label className="text-xs font-medium text-surface-700 uppercase">{formatLabel(key)}</label>
-                      <input
-                        type="text"
-                        value={value}
-                        onChange={(e) => setEditData({ ...editData, [key]: e.target.value })}
-                        className="w-full mt-1 px-3 py-2 text-sm border border-surface-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-primary-500"
-                      />
-                    </div>
-                  ))}
-                </div>
-              ) : (
-                <div className="grid grid-cols-2 gap-4">
-                  {Object.entries(caseExtractedData).map(([key, value]) => (
-                    <div key={key} className="p-3 bg-surface-50 rounded-lg border border-surface-100">
-                      <p className="text-xs font-medium text-surface-600 uppercase mb-1">{formatLabel(key)}</p>
-                      <p className="text-sm text-surface-900">{value}</p>
-                    </div>
-                  ))}
-                </div>
-              )}
-            </div>
-
-            {/* Data Issues */}
-            {selectedCase.dataIssues.length > 0 && (
-              <div className="bg-surface-0 rounded-lg border border-error-200 p-6">
-                <h3 className="text-lg font-semibold text-surface-900 flex items-center gap-2 mb-4">
-                  <AlertCircle className="text-error-500" size={20} />
-                  Data Issues Found
-                </h3>
-                <div className="space-y-3">
-                  {selectedCase.dataIssues.map((issue, idx) => (
-                    <div key={idx} className="flex items-start gap-3 p-3 bg-error-50 rounded-lg border border-error-200">
-                      <AlertTriangle className="text-error-500 flex-shrink-0 mt-0.5" size={18} />
-                      <div className="flex-1">
-                        <p className="text-sm text-error-900 font-medium">{issue}</p>
-                      </div>
-                    </div>
-                  ))}
+            ) : (
+              <div className="flex min-h-[420px] items-center justify-center text-center">
+                <div>
+                  <FileText className="mx-auto mb-3 h-10 w-10 text-on-surface-variant/40" />
+                  <p className="text-sm text-on-surface-variant">No case selected.</p>
                 </div>
               </div>
             )}
-
-            {/* Actions */}
-            <div className="flex gap-3">
-              <button
-                onClick={handleRegenSoW}
-                className="flex items-center gap-2 px-4 py-2 bg-primary-100 text-primary-700 rounded-lg hover:bg-primary-200 transition-colors text-sm font-medium"
-              >
-                <RefreshCw size={16} />
-                Regenerate SoW Draft
-              </button>
-            </div>
-          </div>
-        )}
+          </section>
+        </div>
       </div>
     </div>
   )

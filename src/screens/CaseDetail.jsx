@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+﻿import { useEffect, useMemo, useRef, useState } from 'react'
 import {
   AlertCircle,
   ArrowLeft,
@@ -12,7 +12,6 @@ import {
   History,
   Loader2,
   PencilLine,
-  Save,
   ScanSearch,
   Send,
   ShieldAlert,
@@ -23,9 +22,15 @@ import {
 } from 'lucide-react'
 import {
   addDocumentToCase,
+  CLIENT_PROFILE_TYPE,
+  getDocumentCompletionSummary,
+  getDocumentTypeGroups,
   getActiveCaseId,
   getCaseFileById,
-  getRequiredDocumentCategories,
+  getClientProfileType,
+  calculateReadinessScore,
+  getReadinessScore,
+  hasFreshAiAnalysis,
   hasRequiredDocuments,
   hasRequiredFields,
   removeDocumentFromCase,
@@ -34,14 +39,6 @@ import {
 } from '../lib/caseFiles'
 import { analyzeCaseDocuments, extractDocumentText } from '../lib/api'
 import { hasFirebaseConfig, uploadCaseDocumentFile } from '../lib/firebase'
-
-const allCategories = [
-  'Passport / ID',
-  'Bank Statements',
-  'Source of Wealth (SoW)',
-  'Utility Bill',
-  'Tax Residency Bill',
-]
 
 const tabs = [
   { id: 'overview', label: 'Overview' },
@@ -57,6 +54,17 @@ function formatDate(value) {
   return new Date(value).toLocaleDateString()
 }
 
+function formatDateTime(value) {
+  if (!value) return '--'
+  return new Date(value).toLocaleString([], {
+    year: 'numeric',
+    month: 'numeric',
+    day: 'numeric',
+    hour: 'numeric',
+    minute: '2-digit',
+  })
+}
+
 function formatCurrencyLikeNumber(value) {
   if (!value && value !== 0) return '--'
   const digits = String(value).replace(/[^\d.-]/g, '')
@@ -69,15 +77,19 @@ function formatCurrencyLikeNumber(value) {
 function getStatusBadge(status) {
   switch (status) {
     case 'Draft':
-      return 'bg-secondary text-secondary-foreground'
+      return 'bg-surface-container-high text-on-surface-variant'
     case 'Missing Documents':
-      return 'bg-warning/15 text-warning'
-    case 'In Review':
-      return 'bg-tertiary/12 text-tertiary'
-    case 'Ready for Review':
-      return 'bg-success/12 text-success'
-    case 'Escalated':
       return 'bg-error/10 text-error'
+    case 'Under Review':
+      return 'bg-warning/20 text-warning'
+    case 'Pending Review':
+      return 'bg-tertiary/12 text-tertiary'
+    case 'Action Required':
+      return 'bg-warning/15 text-warning'
+    case 'Rejected':
+      return 'bg-error/10 text-error'
+    case 'Escalated':
+      return 'bg-error/20 text-error'
     case 'Approved':
       return 'bg-success/15 text-success'
     default:
@@ -114,9 +126,24 @@ function getDocumentNameByCategory(caseFile, category) {
   return match?.name || null
 }
 
-function getCategoryOptionLabel(category, documents = []) {
-  const isUploaded = documents.some((document) => document.category === category)
-  return `${category} — ${isUploaded ? 'Uploaded' : 'Not Uploaded'}`
+function normalizeUploadedCategory(category) {
+  const legacyMap = {
+    Passport: 'Passport / ID',
+    'National ID': 'Passport / ID',
+    'Utility Bill': 'Address Proof',
+    'Utility Bill (<=3 months)': 'Address Proof',
+    'Bank Statement with Address': 'Address Proof',
+    'Government-Issued Address Letter': 'Address Proof',
+    'Tax Residency Bill': 'Tax Residency',
+    'Tax Residency Self-Certification': 'Tax Residency',
+    'Tax Identification Number (TIN) Evidence': 'Tax Residency',
+    'FATCA Declaration': 'Tax Residency',
+    'Source of Wealth (SoW)': 'SoW Declaration',
+    'Bank Statements': 'Bank Statements (Source of Funds)',
+    'Recent Bank Statements (3-6 months)': 'Bank Statements (Source of Funds)',
+    'Transfer / Liquidity Proof': 'Bank Statements (Source of Funds)',
+  }
+  return legacyMap[String(category || '').trim()] || String(category || '').trim()
 }
 
 function buildMockExtraction(caseFile) {
@@ -201,7 +228,12 @@ function buildRiskFlags(caseFile, missingCategories, extraction) {
 }
 
 function assessAnalysisConfidence(missingCategories = [], mismatches = [], riskFlags = []) {
-  const missingKeyEvidence = ['Passport / ID', 'Bank Statements', 'Source of Wealth (SoW)']
+  const missingKeyEvidence = [
+    'Identity Verification (KYC)',
+    'Source of Wealth (SoW)',
+    'Source of Wealth Supporting Documents',
+    'Source of Funds (SoF)',
+  ]
     .some((category) => missingCategories.includes(category))
   const hasHighSeverityRisk = riskFlags.some((risk) => risk.severity === 'High')
   const hasMajorMismatch = mismatches.length > 1
@@ -263,17 +295,203 @@ function deriveRiskLevel({ missingCategories = [], mismatches = [], riskFlags = 
 }
 
 function formatAnalysisFieldValue(value) {
+  return formatAiText(value, '--')
+}
+
+function formatAiText(value, fallback = '--') {
+  if (value === null || value === undefined || value === '') return fallback
+  if (typeof value === 'string') return value
+  if (typeof value === 'number' || typeof value === 'boolean') return String(value)
   if (Array.isArray(value)) {
-    return value.length > 0 ? value.join(', ') : '--'
+    const text = value.map((item) => formatAiText(item, '')).filter(Boolean).join(', ')
+    return text || fallback
   }
-  if (value === null || value === undefined || value === '') {
-    return '--'
+  if (typeof value === 'object') {
+    const candidate = value.action
+      || value.recommendation
+      || value.nextAction
+      || value.description
+      || value.issue
+      || value.title
+      || value.rationale
+    if (candidate) return formatAiText(candidate, fallback)
+    return JSON.stringify(value)
   }
-  return String(value)
+  return fallback
+}
+
+function makeStableKey(value, fallback) {
+  return formatAiText(value, fallback).replace(/\s+/g, '-').toLowerCase()
+}
+
+function shouldShowExtractedField(fieldKey, profileType) {
+  if (fieldKey === 'ownershipPercentage') {
+    return profileType === CLIENT_PROFILE_TYPE.BUSINESS_OWNER
+  }
+  return true
+}
+
+const DECLARED_CASE_FIELD_KEYS = new Set([
+  'name',
+  'clientname',
+  'occupation',
+  'nationality',
+  'residence',
+  'countryofresidence',
+  'networth',
+  'purpose',
+])
+
+const EXTRACTED_EVIDENCE_LABELS = {
+  sourceofwealth: 'Source of Wealth indicators',
+  sourceofwealthindicators: 'Source of Wealth indicators',
+  sourceoffunds: 'Source of Funds indicators',
+  incomeindicators: 'Income indicators',
+}
+
+function normalizeFieldKey(value) {
+  return formatAiText(value, '').replace(/[^a-z0-9]/gi, '').toLowerCase()
+}
+
+function isUndeclaredValue(value) {
+  const normalized = formatAiText(value, '').trim().toLowerCase()
+  return !normalized || normalized === '--' || normalized === 'not declared' || normalized === 'not provided' || normalized === 'n/a'
+}
+
+function prettifyFieldLabel(value) {
+  return formatAiText(value, 'Evidence')
+    .replace(/([a-z])([A-Z])/g, '$1 $2')
+    .replace(/[_-]+/g, ' ')
+    .replace(/\b\w/g, (letter) => letter.toUpperCase())
+}
+
+function getConfidenceRank(level) {
+  const normalized = formatAiText(level, '').toLowerCase()
+  if (normalized.includes('high')) return 3
+  if (normalized.includes('medium')) return 2
+  if (normalized.includes('low')) return 1
+  return 0
+}
+
+function normalizeConfidence(value, fallback = 'Low') {
+  if (value && typeof value === 'object' && !Array.isArray(value)) {
+    const items = Object.entries(value).map(([key, rawValue]) => {
+      const text = formatAiText(rawValue, 'Low')
+      const match = text.match(/\b(high|medium|low)\b/i)
+      const level = match ? match[1][0].toUpperCase() + match[1].slice(1).toLowerCase() : 'Low'
+      const detail = text.replace(/\b(high|medium|low)\b\s*[:,-]?\s*/i, '').trim()
+
+      return {
+        label: prettifyFieldLabel(key),
+        level,
+        detail,
+      }
+    })
+    const ranks = items.map((item) => getConfidenceRank(item.level)).filter(Boolean)
+    const lowestRank = ranks.length > 0 ? Math.min(...ranks) : getConfidenceRank(fallback)
+    const overall = lowestRank >= 3 ? 'High' : lowestRank === 2 ? 'Medium' : 'Low'
+
+    return {
+      level: overall,
+      items,
+    }
+  }
+
+  const text = formatAiText(value, fallback)
+  const match = text.match(/\b(high|medium|low)\b/i)
+  const level = match ? match[1][0].toUpperCase() + match[1].slice(1).toLowerCase() : formatAiText(fallback, 'Low')
+  return {
+    level,
+    items: [],
+  }
+}
+
+function getActionPriority(actionText) {
+  const text = formatAiText(actionText, '').toLowerCase()
+
+  if (/\b(low[- ]risk status|record .*low[- ]risk|retain .*regular review|regular review due to high net worth|periodic|annual monitoring|ongoing consistency|document .*findings|retain .*supporting evidence)\b/.test(text)) {
+    return 'Medium'
+  }
+
+  if (/\b(sanctions? hit|pep match|positive match|adverse media|fraud|cannot be verified|unverified source of wealth|escalat|critical|blocker)\b/.test(text)
+    || /\b(high|must|mandatory|required|missing)\b/.test(text) && !/\bhigh net worth\b/.test(text)) {
+    return 'High'
+  }
+
+  if (/\b(request|obtain|collect|provide|upload|verify|validate|confirm|document|statement|report|grant|vesting|dividend|net.?worth|source.?of.?funds|evidence)\b/.test(text)) {
+    return 'Medium'
+  }
+  return 'Low'
+}
+
+function getPriorityTone(priority) {
+  if (priority === 'High') return 'bg-error/10 text-error'
+  if (priority === 'Medium') return 'bg-warning/15 text-warning'
+  return 'bg-surface-container text-on-surface-variant'
+}
+
+function getUploadTypeForAction(actionText) {
+  const text = formatAiText(actionText, '').toLowerCase()
+  if (!/\b(request|obtain|collect|provide|upload|statement|report|letter|schedule|document|evidence|run|perform|screening|monitoring|implement)\b/.test(text)) {
+    return null
+  }
+  if (/sanctions?|pep|adverse media|screening/.test(text)) return 'Full Sanctions, PEP, and Adverse Media Screening'
+  if (/ongoing monitoring|periodic review|monitoring|ownership structure/.test(text)) return 'Enhanced Ongoing Monitoring Plan'
+  if (/share.?sale|cash proceeds|transaction confirmation|secondary share/.test(text)) return 'Certified Share-Sale Proceeds Confirmation'
+  if (/address|utility/.test(text)) return 'Address Proof'
+  if (/employment contract/.test(text)) return 'Employment Contract'
+  if (/payslip|salary/.test(text)) return 'Payslips'
+  if (/equity|grant|vesting|brokerage/.test(text)) return 'Equity Compensation Supporting Documents'
+  if (/dividend/.test(text)) return 'Dividend Statements'
+  if (/net.?worth|wealth statement|asset.?valuation/.test(text)) return 'Net Worth / Asset Valuation'
+  if (/source.?of.?funds|sof|bank|liquidity|balance/.test(text)) return 'Source of Funds Supporting Documents'
+  return 'Additional Supporting Evidence'
+}
+
+function getUploadedEvidenceCount(caseFile, uploadType) {
+  if (!uploadType) return 0
+  const target = normalizeUploadedCategory(uploadType).toLowerCase()
+  const targetMatchers = [
+    target,
+    ...(
+      /sanctions?|pep|adverse media|screening/.test(target)
+        ? ['sanctions', 'pep', 'adverse media', 'screening']
+        : []
+    ),
+    ...(
+      /monitoring|periodic review/.test(target)
+        ? ['monitoring', 'periodic review']
+        : []
+    ),
+    ...(
+      /share.?sale|cash proceeds|transaction/.test(target)
+        ? ['share-sale', 'share sale', 'cash proceeds', 'transaction confirmation', 'secondary share']
+        : []
+    ),
+  ]
+  return (caseFile?.documents || []).filter((document) => (
+    normalizeUploadedCategory(document.category).toLowerCase() === target
+    || targetMatchers.some((matcher) => {
+      const haystack = `${document.category || ''} ${document.name || ''} ${document.extractedText || ''}`.toLowerCase()
+      return matcher && haystack.includes(matcher)
+    })
+  )).length
+}
+
+function isUsefulMissingEvidence(item) {
+  const document = formatAiText(item.document, '').trim().toLowerCase()
+  const issue = formatAiText(item.issue, '').trim().toLowerCase()
+  const reason = formatAiText(item.reason, '').trim()
+  const isGeneric = (!document || document === 'supporting evidence')
+    && (!issue || issue === 'insufficient evidence')
+    && !reason
+
+  return !isGeneric
 }
 
 function normalizeAiAnalysisPayload(payload = {}, fallback = {}) {
   const extractedData = payload.extractedData || {}
+  const profileType = fallback.profileType || CLIENT_PROFILE_TYPE.SALARIED_EMPLOYEE
   const extractedFields = [
     ['name', 'Name'],
     ['occupation', 'Occupation'],
@@ -283,7 +501,8 @@ function normalizeAiAnalysisPayload(payload = {}, fallback = {}) {
     ['incomeIndicators', 'Income indicators'],
     ['countriesInvolved', 'Countries Involved'],
     ['keyDatesAndAmounts', 'Key dates and amounts'],
-  ].map(([key, label]) => {
+  ].filter(([key]) => shouldShowExtractedField(key, profileType))
+    .map(([key, label]) => {
     const field = extractedData[key]
     if (!field) return null
 
@@ -297,28 +516,51 @@ function normalizeAiAnalysisPayload(payload = {}, fallback = {}) {
     return {
       label,
       value: formatAnalysisFieldValue(rawValue),
-      source: source || '--',
+      source: formatAiText(source, '--'),
     }
   }).filter(Boolean)
 
-  const mismatches = (payload.mismatches || []).map((item, index) => ({
-    id: item.id || `${item.field || item.label || 'mismatch'}-${index}`,
-    label: item.field || item.label || 'Detected mismatch',
-    declared: item.declaredValue || item.declared || 'Not declared',
-    detected: item.detectedValue || item.detected || 'Not detected',
-    issue: item.issue || '',
-    source: item.sourceDocument || item.source || '--',
-    severity: item.severity || 'Medium',
-  }))
+  const evidenceFromMismatches = []
+  const mismatches = (payload.mismatches || []).map((item, index) => {
+    const fieldKey = normalizeFieldKey(item.field || item.label)
+    const declared = formatAiText(item.declaredValue || item.declared, 'Not declared')
+    const detected = formatAiText(item.detectedValue || item.detected, 'Not detected')
+    const source = formatAiText(item.sourceDocument || item.source, '--')
+
+    if (!DECLARED_CASE_FIELD_KEYS.has(fieldKey) || isUndeclaredValue(declared)) {
+      evidenceFromMismatches.push({
+        label: EXTRACTED_EVIDENCE_LABELS[fieldKey] || formatAiText(item.field || item.label, 'Document finding'),
+        value: detected,
+        source,
+      })
+      return null
+    }
+
+    return {
+      id: item.id || `${makeStableKey(item.field || item.label, 'mismatch')}-${index}`,
+      label: formatAiText(item.field || item.label, 'Detected mismatch'),
+      declared,
+      detected,
+      issue: formatAiText(item.issue, ''),
+      source,
+      severity: formatAiText(item.severity, 'Medium'),
+    }
+  }).filter(Boolean)
 
   const risks = (payload.riskFlags || payload.risks || fallback.risks || []).map((risk, index) => ({
     id: risk.id || `risk-${index}`,
-    title: risk.title || 'Risk flag',
-    severity: risk.severity || 'Medium',
-    description: risk.description || risk.rationale || '',
-    rationale: risk.rationale || risk.description || '',
-    nextAction: risk.nextAction || '',
+    title: formatAiText(risk.title, 'Risk flag'),
+    severity: formatAiText(risk.severity, 'Medium'),
+    description: formatAiText(risk.description || risk.rationale, ''),
+    rationale: formatAiText(risk.rationale || risk.description, ''),
+    nextAction: formatAiText(risk.nextAction, ''),
   }))
+  const missingSupportingEvidence = (payload.missingOrInsufficientDocuments || []).map((item, index) => ({
+    id: item.id || `missing-evidence-${index}`,
+    document: formatAiText(item.document || item.name, 'Supporting evidence'),
+    issue: formatAiText(item.issue, 'Insufficient evidence'),
+    reason: formatAiText(item.reason, ''),
+  })).filter(isUsefulMissingEvidence)
 
   const fallbackAssessment = assessAnalysisConfidence(
     fallback.missingCategories || [],
@@ -326,55 +568,77 @@ function normalizeAiAnalysisPayload(payload = {}, fallback = {}) {
     risks,
   )
 
-  const confidence = payload.confidence
+  const rawConfidence = payload.confidence
     || payload.sourceOfWealthDraft?.confidence
     || fallbackAssessment.level
+  const confidence = normalizeConfidence(rawConfidence, fallbackAssessment.level)
+  const sourceOfWealthDraft = payload.sourceOfWealthDraft
+    ? {
+      primarySourceOfWealth: formatAiText(payload.sourceOfWealthDraft.primarySourceOfWealth, ''),
+      supportingEvidence: formatAiText(payload.sourceOfWealthDraft.supportingEvidence, ''),
+      narrativeExplanation: formatAiText(payload.sourceOfWealthDraft.narrativeExplanation, ''),
+      confidence: normalizeConfidence(payload.sourceOfWealthDraft.confidence, confidence.level).level,
+    }
+    : null
 
   return {
-    extractedFields,
+    extractedFields: [...extractedFields, ...evidenceFromMismatches],
     mismatches,
     risks,
-    suggestions: payload.suggestedActions || payload.recommendations || fallback.suggestions || [],
-    confidence,
-    confidenceExplanation: payload.confidenceExplanation || fallbackAssessment.message,
+    missingSupportingEvidence,
+    suggestions: (payload.suggestedActions || payload.recommendations || fallback.suggestions || [])
+      .map((suggestion) => formatAiText(suggestion, 'Review case before submission')),
+    confidence: confidence.level,
+    confidenceItems: confidence.items,
+    confidenceExplanation: formatAiText(payload.confidenceExplanation, fallbackAssessment.message),
     updatedAt: payload.updatedAt || fallback.updatedAt || null,
     beforeReadiness: payload.beforeReadiness ?? fallback.beforeReadiness ?? 0,
     afterReadiness: payload.afterReadiness ?? fallback.afterReadiness ?? 0,
-    sourceOfWealthDraft: payload.sourceOfWealthDraft || null,
+    sourceOfWealthDraft,
   }
 }
 
 function buildAuditEntries(caseFile) {
-  const entries = [
-    {
-      timestamp: formatDate(caseFile.updatedAt),
-      actor: 'RM',
-      action: 'Reviewed case workspace and updated onboarding details.',
-    },
-    {
-      timestamp: formatDate(caseFile.updatedAt),
-      actor: 'System',
-      action: 'Generated extracted-data summary and SoW narrative draft.',
-    },
-  ]
+  const statusHistory = Array.isArray(caseFile?.statusHistory) ? caseFile.statusHistory : []
+  const statusEntries = statusHistory.map((entry) => ({
+    timestampRaw: entry.timestamp,
+    timestamp: formatDateTime(entry.timestamp),
+    actor: entry.actor || 'System',
+    action: entry.from
+      ? `Status changed from ${entry.from} to ${entry.to}.${entry.reason ? ` ${entry.reason}` : ''}`
+      : `Status initialized to ${entry.to}.${entry.reason ? ` ${entry.reason}` : ''}`,
+  }))
 
-  if ((caseFile.documents || []).length > 0) {
-    entries.unshift({
-      timestamp: formatDate(caseFile.documents?.[caseFile.documents.length - 1]?.uploadedAt),
+  const documentEntries = (caseFile?.documents || [])
+    .filter((document) => document.uploadedAt)
+    .map((document) => ({
+      timestampRaw: document.uploadedAt,
+      timestamp: formatDateTime(document.uploadedAt),
       actor: 'RM',
-      action: `Uploaded ${(caseFile.documents || []).length} document(s) to the case file.`,
-    })
-  }
+      action: `Uploaded ${document.name || 'document'} as ${normalizeUploadedCategory(document.category) || 'supporting evidence'}.`,
+    }))
 
-  if (caseFile.submittedAt) {
-    entries.unshift({
-      timestamp: formatDate(caseFile.submittedAt),
+  const analysisEntry = caseFile?.aiAnalysis?.updatedAt
+    ? [{
+      timestampRaw: caseFile.aiAnalysis.updatedAt,
+      timestamp: formatDateTime(caseFile.aiAnalysis.updatedAt),
+      actor: 'AI Analysis',
+      action: 'Completed document analysis and refreshed extracted insights.',
+    }]
+    : []
+
+  const submissionEntry = caseFile?.submittedAt
+    ? [{
+      timestampRaw: caseFile.submittedAt,
+      timestamp: formatDateTime(caseFile.submittedAt),
       actor: 'RM',
       action: 'Submitted case for compliance review.',
-    })
-  }
+    }]
+    : []
 
-  return entries
+  return [...statusEntries, ...documentEntries, ...analysisEntry, ...submissionEntry]
+    .filter((entry) => entry.timestampRaw)
+    .sort((a, b) => Date.parse(b.timestampRaw || '') - Date.parse(a.timestampRaw || ''))
 }
 
 function SectionCard({ title, description, icon: Icon, children, action }) {
@@ -402,10 +666,10 @@ function SectionCard({ title, description, icon: Icon, children, action }) {
 export default function CaseDetail({ onNavigate }) {
   const [caseFile, setCaseFile] = useState(null)
   const [loading, setLoading] = useState(true)
-  const [saving, setSaving] = useState(false)
   const [submitting, setSubmitting] = useState(false)
   const [message, setMessage] = useState('')
-  const [selectedCategory, setSelectedCategory] = useState(allCategories[0])
+  const [selectedCategory, setSelectedCategory] = useState('')
+  const [uploadTargetType, setUploadTargetType] = useState('')
   const [uploading, setUploading] = useState(false)
   const [sowDraftText, setSowDraftText] = useState('')
   const [analysisStatus, setAnalysisStatus] = useState('not-run')
@@ -413,6 +677,14 @@ export default function CaseDetail({ onNavigate }) {
   const [analysisSnapshot, setAnalysisSnapshot] = useState(null)
   const [activeTab, setActiveTab] = useState('overview')
   const [copied, setCopied] = useState(false)
+  const [readinessSummary, setReadinessSummary] = useState(null)
+  const documentInputRef = useRef(null)
+
+  const requiredDocumentGroups = useMemo(() => getDocumentTypeGroups(caseFile), [caseFile?.occupation, caseFile?.id])
+  const requiredDocumentOptions = useMemo(
+    () => requiredDocumentGroups.flatMap((group) => group.options),
+    [requiredDocumentGroups],
+  )
 
   const handleCopyCaseId = async () => {
     if (!caseFile?.id || typeof navigator === 'undefined' || !navigator.clipboard) return
@@ -424,7 +696,9 @@ export default function CaseDetail({ onNavigate }) {
   const refreshCase = async () => {
     const caseId = getActiveCaseId()
     const activeCase = caseId ? await getCaseFileById(caseId) : null
+    const nextReadinessSummary = activeCase?.id ? await getReadinessScore(activeCase.id) : null
     setCaseFile(activeCase)
+    setReadinessSummary(nextReadinessSummary)
     setLoading(false)
     return activeCase
   }
@@ -436,7 +710,10 @@ export default function CaseDetail({ onNavigate }) {
       const activeCase = await refreshCase()
       if (!isMounted) return
 
-      const initialDraft = activeCase?.sowDraft?.narrativeSummary || buildSowDraft(activeCase || {}).narrativeSummary
+      const initialDraft = formatAiText(
+        activeCase?.sowDraft?.narrativeSummary,
+        buildSowDraft(activeCase || {}).narrativeSummary,
+      )
       setSowDraftText(initialDraft)
 
       if (activeCase?.aiAnalysis) {
@@ -453,26 +730,55 @@ export default function CaseDetail({ onNavigate }) {
     }
   }, [])
 
+  useEffect(() => {
+    if (requiredDocumentOptions.length === 0) {
+      setSelectedCategory('')
+      return
+    }
+
+    if (!requiredDocumentOptions.includes(selectedCategory)) {
+      setSelectedCategory(requiredDocumentOptions[0])
+    }
+  }, [requiredDocumentOptions, selectedCategory])
+
   const derived = useMemo(() => {
     if (!caseFile) {
       return {
         readiness: 0,
+        readinessBreakdown: {
+          profile: { status: 'Incomplete', complete: false },
+          documents: { completed: 0, total: 0, complete: false },
+          risk: { status: 'Pending', cleared: false, aiAnalysisCompleted: false, hasHighOrCriticalRisk: false },
+        },
         nextAction: 'Select a case from the dashboard.',
         completedCategories: 0,
-        totalCategories: getRequiredDocumentCategories().length,
+        totalCategories: 0,
         missingCategories: [],
+        checklistEntries: [],
+        requiredDocuments: [],
+        groupedRequiredDocuments: {},
+        extraDocuments: [],
+        missingRequiredDocuments: [],
+        needsReviewDocuments: [],
+        uploadedRequiredCount: 0,
+        missingRequiredCount: 0,
+        needsReviewCount: 0,
         extraction: buildMockExtraction({}),
         sowDraft: buildSowDraft({}),
         riskFlags: [],
         clientType: 'Individual',
         riskLevel: 'Low',
+        riskClearanceReason: 'AI analysis has not been run.',
+        profileType: CLIENT_PROFILE_TYPE.SALARIED_EMPLOYEE,
         auditEntries: [],
         analysisData: {
           extractedFields: [],
           mismatches: [],
-          risks: [],
-          suggestions: [],
+        risks: [],
+        missingSupportingEvidence: [],
+        suggestions: [],
           confidence: 'Low',
+          confidenceItems: [],
           updatedAt: null,
           beforeReadiness: 0,
           afterReadiness: 0,
@@ -480,24 +786,22 @@ export default function CaseDetail({ onNavigate }) {
       }
     }
 
-    const requiredCategories = getRequiredDocumentCategories()
-    const uploadedCategories = new Set((caseFile.documents || []).map((item) => item.category))
-    const completedCategories = requiredCategories.filter((category) => uploadedCategories.has(category)).length
-    const missingCategories = requiredCategories.filter((category) => !uploadedCategories.has(category))
-    const docScore = requiredCategories.length === 0 ? 0 : (completedCategories / requiredCategories.length) * 60
-    const profileScore = hasRequiredFields(caseFile) ? 20 : 0
-    const sowScore = sowDraftText.trim().length > 80 ? 20 : 0
-    const baseReadiness = Math.round(docScore + profileScore + sowScore)
+    const completionSummary = getDocumentCompletionSummary(caseFile)
+    const profileType = getClientProfileType(caseFile)
+    const completedCategories = readinessSummary?.documents?.completed ?? completionSummary.requiredCompletedCount
+    const missingCategories = completionSummary.missingCategoryLabels
+    const readiness = readinessSummary?.percentage ?? 0
+    const baseReadiness = readiness
 
     const extraction = buildMockExtraction(caseFile)
     const activeAnalysis = analysisSnapshot || caseFile.aiAnalysis || null
     const savedSowDraft = caseFile.sowDraft || {}
     const defaultSowDraft = buildSowDraft(caseFile)
     const sowDraft = {
-      primarySource: savedSowDraft.primarySource || defaultSowDraft.primarySource,
-      supportingEvidence: savedSowDraft.supportingEvidence || defaultSowDraft.supportingEvidence,
-      narrativeSummary: sowDraftText || savedSowDraft.narrativeSummary || defaultSowDraft.narrativeSummary,
-      confidence: savedSowDraft.confidence || defaultSowDraft.confidence,
+      primarySource: formatAiText(savedSowDraft.primarySource, defaultSowDraft.primarySource),
+      supportingEvidence: formatAiText(savedSowDraft.supportingEvidence, defaultSowDraft.supportingEvidence),
+      narrativeSummary: formatAiText(sowDraftText || savedSowDraft.narrativeSummary, defaultSowDraft.narrativeSummary),
+      confidence: formatAiText(savedSowDraft.confidence, defaultSowDraft.confidence),
     }
 
     const riskFlags = buildRiskFlags(caseFile, missingCategories, extraction)
@@ -507,18 +811,22 @@ export default function CaseDetail({ onNavigate }) {
         { label: 'Occupation', value: extraction.occupation, source: 'employment_letter.pdf' },
         { label: 'Employer / Business Name', value: extraction.employer, source: 'bank_statement.pdf' },
         { label: 'Source of Wealth indicators', value: 'Salary income, investment proceeds, retained business distributions', source: 'source_of_wealth.pdf' },
-        { label: 'Ownership Percentage', value: extraction.ownershipPercentage, source: 'company_registry_extract.pdf' },
+        profileType === CLIENT_PROFILE_TYPE.BUSINESS_OWNER
+          ? { label: 'Ownership Percentage', value: extraction.ownershipPercentage, source: 'company_registry_extract.pdf' }
+          : null,
         { label: 'Countries Involved', value: extraction.countriesInvolved.join(', '), source: 'bank_statement.pdf' },
         { label: 'Key financial indicators', value: `Declared net worth ${caseFile.netWorth || '--'}`, source: 'bank_statement.pdf' },
-      ],
+      ].filter(Boolean),
       mismatches: extraction.mismatches,
       risks: riskFlags,
+      missingSupportingEvidence: [],
       suggestions: [
         missingCategories.length > 0 ? `Upload ${missingCategories[0]}${missingCategories.length > 1 ? ' and remaining required documents' : ''}` : 'Validate all uploaded supporting documents',
         extraction.mismatches.length > 0 ? `Verify ${extraction.mismatches[0].label.toLowerCase()}` : 'Confirm extracted data aligns with intake declarations',
         'Review AI extracted data before compliance handoff',
       ],
       confidence: confidenceAssessment.level,
+      confidenceItems: [],
       confidenceExplanation: confidenceAssessment.message,
       updatedAt: analysisUpdatedAt,
       beforeReadiness: Math.max(baseReadiness - (missingCategories.length > 0 ? 20 : 10), 0),
@@ -527,6 +835,7 @@ export default function CaseDetail({ onNavigate }) {
     const normalizedAnalysisData = activeAnalysis
       ? normalizeAiAnalysisPayload(activeAnalysis, {
         missingCategories,
+        profileType,
         risks: riskFlags,
         suggestions: fallbackAnalysisData.suggestions,
         updatedAt: analysisUpdatedAt,
@@ -535,28 +844,32 @@ export default function CaseDetail({ onNavigate }) {
       })
       : fallbackAnalysisData
 
-    const mismatchPenalty = getMismatchPenalty(normalizedAnalysisData.mismatches)
-    const riskPenalty = normalizedAnalysisData.risks.reduce((total, risk) => {
-      const severity = String(risk.severity || '').toLowerCase()
-      if (severity === 'high') return total + 20
-      if (severity === 'medium') return total + 10
-      if (severity === 'low') return total + 4
-      return total + 8
-    }, 0)
-    const readiness = Math.max(0, Math.min(100, Math.round(baseReadiness - mismatchPenalty - riskPenalty)))
+    const hasHighSeverityIssue = normalizedAnalysisData.risks.some((risk) => String(risk.severity || '').toLowerCase() === 'high')
+      || normalizedAnalysisData.risks.some((risk) => String(risk.severity || '').toLowerCase() === 'critical')
+      || normalizedAnalysisData.mismatches.some((mismatch) => String(mismatch.severity || '').toLowerCase() === 'high')
+    const hasHighPriorityFollowUp = normalizedAnalysisData.suggestions.some((suggestion) => getActionPriority(suggestion) === 'High')
+      || normalizedAnalysisData.missingSupportingEvidence.some((item) => getActionPriority(`${item.document} ${item.issue} ${item.reason}`) === 'High')
     const riskLevel = deriveRiskLevel({
       missingCategories,
       mismatches: normalizedAnalysisData.mismatches,
-      riskFlags: normalizedAnalysisData.risks,
+      riskFlags: hasHighPriorityFollowUp
+        ? [...normalizedAnalysisData.risks, { title: 'High-priority follow-up evidence required', severity: 'High' }]
+        : normalizedAnalysisData.risks,
       readiness,
     })
-    const hasHighSeverityIssue = normalizedAnalysisData.risks.some((risk) => String(risk.severity || '').toLowerCase() === 'high')
-      || normalizedAnalysisData.mismatches.some((mismatch) => String(mismatch.severity || '').toLowerCase() === 'high')
     let nextAction = 'Review case details and proceed with the next workflow step.'
     if (missingCategories.length > 0) nextAction = 'Resolve missing documents before compliance handoff.'
-    else if (hasHighSeverityIssue || normalizedAnalysisData.mismatches.length > 0) nextAction = 'Resolve AI-detected mismatches and risk issues before submission.'
+    else if (hasHighSeverityIssue || hasHighPriorityFollowUp || normalizedAnalysisData.mismatches.length > 0) nextAction = 'Resolve high-priority AI findings before submission.'
     else if (readiness < 100) nextAction = 'Review extracted data and finalize the SoW draft.'
     else nextAction = 'Submit for compliance review.'
+    let riskClearanceReason = 'Risk checks are cleared.'
+    if (!hasFreshAiAnalysis(caseFile)) {
+      riskClearanceReason = 'Run AI analysis after the latest document upload.'
+    } else if (hasHighSeverityIssue) {
+      riskClearanceReason = 'High or critical risk findings need review.'
+    } else if (hasHighPriorityFollowUp) {
+      riskClearanceReason = 'High-priority AI follow-up is still open.'
+    }
     const clientType = Number(String(caseFile.netWorth || '').replace(/,/g, '')) >= 10000000 ? 'UHNWI' : 'HNWI'
     const analysisData = {
       ...normalizedAnalysisData,
@@ -566,52 +879,63 @@ export default function CaseDetail({ onNavigate }) {
 
     return {
       readiness,
+      readinessBreakdown: readinessSummary || {
+        profile: {
+          complete: hasRequiredFields(caseFile),
+          status: hasRequiredFields(caseFile) ? 'Complete' : 'Incomplete',
+        },
+        documents: {
+          completed: completionSummary.requiredCompletedCount,
+          total: completionSummary.requiredTotal,
+          complete: completionSummary.allRequiredComplete,
+        },
+        risk: {
+          cleared: hasFreshAiAnalysis(caseFile) && !hasHighSeverityIssue && !hasHighPriorityFollowUp,
+          status: hasFreshAiAnalysis(caseFile) && !hasHighSeverityIssue && !hasHighPriorityFollowUp ? 'Cleared' : 'Pending',
+          aiAnalysisCompleted: hasFreshAiAnalysis(caseFile),
+          hasHighOrCriticalRisk: hasHighSeverityIssue || hasHighPriorityFollowUp,
+        },
+      },
       nextAction,
       completedCategories,
-      totalCategories: requiredCategories.length,
+      totalCategories: readinessSummary?.documents?.total ?? completionSummary.requiredTotal,
       missingCategories,
+      checklistEntries: completionSummary.entries,
+      requiredDocuments: completionSummary.requiredDocuments,
+      groupedRequiredDocuments: completionSummary.groupedRequiredDocuments,
+      extraDocuments: completionSummary.extraDocuments,
+      missingRequiredDocuments: completionSummary.missingRequiredDocuments,
+      needsReviewDocuments: completionSummary.needsReviewDocuments,
+      uploadedRequiredCount: completionSummary.uploadedRequiredCount,
+      missingRequiredCount: completionSummary.missingRequiredCount,
+      needsReviewCount: completionSummary.needsReviewCount,
       extraction,
       sowDraft,
       riskFlags,
       analysisData,
       clientType,
       riskLevel,
+      riskClearanceReason,
+      profileType,
       auditEntries: buildAuditEntries(caseFile),
     }
-  }, [caseFile, sowDraftText, analysisSnapshot, analysisUpdatedAt])
+  }, [caseFile, sowDraftText, analysisSnapshot, analysisUpdatedAt, readinessSummary])
 
-  const canSubmit = Boolean(caseFile) && derived.readiness >= 100 && derived.missingCategories.length === 0
-  const selectedCategoryUploaded = (caseFile?.documents || []).some((document) => document.category === selectedCategory)
-
-  const handleSaveDraft = async () => {
-    if (!caseFile) return
-
-    setSaving(true)
-    setMessage('')
-
-    const nextSowDraft = {
-      primarySource: derived.sowDraft.primarySource,
-      supportingEvidence: derived.sowDraft.supportingEvidence,
-      narrativeSummary: sowDraftText,
-      confidence: derived.sowDraft.confidence,
-    }
-
-    const updated = await updateCaseData(caseFile.id, {
-      sowDraft: nextSowDraft,
-      extractedData: derived.extraction,
-      riskFlags: derived.riskFlags,
-      aiAnalysis: analysisSnapshot || derived.analysisData,
-      status: caseFile.status === 'Approved' ? 'Approved' : 'Draft',
+  const hasCriticalRiskFlags = derived.riskFlags.some((risk) => {
+    const severity = String(risk.severity || '').toLowerCase()
+    return severity === 'high' || severity === 'critical'
+  })
+    || derived.analysisData.risks.some((risk) => {
+      const severity = String(risk.severity || '').toLowerCase()
+      return severity === 'high' || severity === 'critical'
     })
-
-    if (updated) {
-      setCaseFile(updated)
-      setMessage('Draft saved. Workspace updates are stored to the case file.')
-    }
-
-    setSaving(false)
-  }
-
+  const aiAnalysisCompleted = hasFreshAiAnalysis(caseFile)
+  const canSubmit = Boolean(caseFile)
+    && hasRequiredFields(caseFile)
+    && derived.missingCategories.length === 0
+    && aiAnalysisCompleted
+    && !hasCriticalRiskFlags
+    && derived.readinessBreakdown.risk.cleared
   const handleSubmit = async () => {
     if (!caseFile || !canSubmit) return
 
@@ -637,62 +961,78 @@ export default function CaseDetail({ onNavigate }) {
     }
 
     setCaseFile(result.caseFile)
-    setMessage('Case submitted successfully. Status updated to In Review.')
+    setReadinessSummary(calculateReadinessScore(result.caseFile))
+    setMessage('Case submitted successfully. Status updated to Pending Review.')
     setSubmitting(false)
+  }
+
+  const triggerUploadForType = (documentType) => {
+    if (!documentType) return
+    setUploadTargetType(documentType)
+    if (documentInputRef.current) {
+      documentInputRef.current.click()
+    }
   }
 
   const handleFileInput = async (event) => {
     const files = Array.from(event.target.files || [])
     if (!caseFile || files.length === 0) return
+    const targetCategory = uploadTargetType || selectedCategory
+    if (!targetCategory) return
 
     setUploading(true)
     setMessage('')
 
-    let extractedDocuments = []
     try {
-      const extractionResult = await extractDocumentText(files)
-      extractedDocuments = extractionResult.documents || []
-    } catch (error) {
-      console.warn('Unable to extract document text during upload:', error)
-    }
-
-    for (const [index, file] of files.entries()) {
-      const extracted = extractedDocuments[index] || {}
-      const documentId = `${file.name}-${file.size}-${file.lastModified}`
-      let storageMeta = {}
-
-      if (hasFirebaseConfig) {
-        try {
-          storageMeta = await uploadCaseDocumentFile(caseFile.id, documentId, file)
-        } catch (error) {
-          console.error('Error uploading document to Firebase Storage:', error)
-          setUploading(false)
-          setMessage(`Unable to upload ${file.name} to Firebase Storage. Check your Firebase Storage setup.`)
-          event.target.value = ''
-          return
-        }
+      let extractedDocuments = []
+      try {
+        const extractionResult = await extractDocumentText(files)
+        extractedDocuments = extractionResult.documents || []
+      } catch (error) {
+        console.warn('Unable to extract document text during upload:', error)
       }
 
-      await addDocumentToCase(caseFile.id, {
-        id: documentId,
-        name: file.name,
-        size: `${(file.size / 1024 / 1024).toFixed(1)} MB`,
-        category: selectedCategory,
-        uploader: 'RM Uploaded',
-        extractedText: extracted.text || '',
-        mimeType: extracted.mimeType || file.type || '',
-        storagePath: storageMeta.storagePath || null,
-        downloadURL: storageMeta.downloadURL || null,
-        uploadedAt: new Date().toISOString(),
-      })
-    }
+      for (const [index, file] of files.entries()) {
+        const extracted = extractedDocuments[index] || {}
+        const documentId = `${file.name}-${file.size}-${file.lastModified}`
+        let storageMeta = {}
 
-    const updated = await refreshCase()
-    if (updated) setCaseFile(updated)
-    setAnalysisStatus((current) => (current === 'completed' ? 'not-run' : current))
-    setUploading(false)
-    setMessage('Documents uploaded and case readiness refreshed.')
-    event.target.value = ''
+        if (hasFirebaseConfig) {
+          try {
+            storageMeta = await uploadCaseDocumentFile(caseFile.id, documentId, file)
+          } catch (error) {
+            console.error('Error uploading document to Firebase Storage:', error)
+            setMessage(`Unable to upload ${file.name} to Firebase Storage. Check your Firebase Storage setup.`)
+            return
+          }
+        }
+
+        await addDocumentToCase(caseFile.id, {
+          id: documentId,
+          name: file.name,
+          size: `${(file.size / 1024 / 1024).toFixed(1)} MB`,
+          category: targetCategory,
+          uploader: 'RM Uploaded',
+          extractedText: extracted.text || '',
+          mimeType: extracted.mimeType || file.type || '',
+          storagePath: storageMeta.storagePath || null,
+          downloadURL: storageMeta.downloadURL || null,
+          uploadedAt: new Date().toISOString(),
+        })
+      }
+
+      const updated = await refreshCase()
+      if (updated) setCaseFile(updated)
+      setAnalysisStatus((current) => (current === 'completed' ? 'not-run' : current))
+      setMessage('Documents uploaded and case readiness refreshed.')
+    } catch (error) {
+      console.error('Document upload flow failed:', error)
+      setMessage(error?.message ? `Upload failed: ${error.message}` : 'Upload failed unexpectedly. Check backend/Firebase logs.')
+    } finally {
+      setUploadTargetType('')
+      setUploading(false)
+      event.target.value = ''
+    }
   }
 
   const handleRemoveDocument = async (documentId) => {
@@ -748,16 +1088,17 @@ export default function CaseDetail({ onNavigate }) {
           'Review AI extracted data before compliance handoff',
         ],
         updatedAt: aiPayload.updatedAt,
+        profileType: derived.profileType,
         beforeReadiness: Math.max(derived.readiness - (derived.riskFlags.length > 0 ? 15 : 5), 0),
         afterReadiness: derived.missingCategories.length === 0 ? Math.max(derived.readiness, 95) : Math.max(derived.readiness, 85),
       })
 
       const nextSowDraft = normalizedAnalysis.sourceOfWealthDraft
-        ? {
-          primarySource: normalizedAnalysis.sourceOfWealthDraft.primarySourceOfWealth || derived.sowDraft.primarySource,
-          supportingEvidence: normalizedAnalysis.sourceOfWealthDraft.supportingEvidence || derived.sowDraft.supportingEvidence,
-          narrativeSummary: normalizedAnalysis.sourceOfWealthDraft.narrativeExplanation || sowDraftText,
-          confidence: normalizedAnalysis.sourceOfWealthDraft.confidence || normalizedAnalysis.confidence,
+      ? {
+          primarySource: formatAiText(normalizedAnalysis.sourceOfWealthDraft.primarySourceOfWealth, derived.sowDraft.primarySource),
+          supportingEvidence: formatAiText(normalizedAnalysis.sourceOfWealthDraft.supportingEvidence, derived.sowDraft.supportingEvidence),
+          narrativeSummary: formatAiText(normalizedAnalysis.sourceOfWealthDraft.narrativeExplanation, sowDraftText),
+          confidence: formatAiText(normalizedAnalysis.sourceOfWealthDraft.confidence, normalizedAnalysis.confidence),
         }
         : null
 
@@ -765,6 +1106,7 @@ export default function CaseDetail({ onNavigate }) {
         aiAnalysis: {
           ...aiPayload,
           confidence: normalizedAnalysis.confidence,
+          confidenceItems: normalizedAnalysis.confidenceItems,
           confidenceExplanation: normalizedAnalysis.confidenceExplanation,
           beforeReadiness: normalizedAnalysis.beforeReadiness,
           afterReadiness: normalizedAnalysis.afterReadiness,
@@ -774,9 +1116,11 @@ export default function CaseDetail({ onNavigate }) {
 
       if (updated) {
         setCaseFile(updated)
+        setReadinessSummary(calculateReadinessScore(updated))
         setAnalysisSnapshot({
           ...aiPayload,
           confidence: normalizedAnalysis.confidence,
+          confidenceItems: normalizedAnalysis.confidenceItems,
           confidenceExplanation: normalizedAnalysis.confidenceExplanation,
           beforeReadiness: normalizedAnalysis.beforeReadiness,
           afterReadiness: normalizedAnalysis.afterReadiness,
@@ -791,8 +1135,13 @@ export default function CaseDetail({ onNavigate }) {
       setMessage('AI analysis completed using the uploaded document text. Review extracted insights and suggested actions.')
     } catch (error) {
       console.error('Error running AI analysis:', error)
-      setAnalysisStatus('not-run')
-      setMessage('AI analysis failed. Check that the Groq backend is running and your GROQ_API_KEY is set.')
+      const hasPreviousAnalysis = Boolean(analysisSnapshot || caseFile?.aiAnalysis)
+      setAnalysisStatus(hasPreviousAnalysis ? 'completed' : 'failed')
+      setMessage(
+        error?.message
+          ? `Latest AI analysis failed: ${error.message}${hasPreviousAnalysis ? ' Previous completed analysis is still shown.' : ''}`
+          : `Latest AI analysis failed. Check that the Groq backend is running and your GROQ_API_KEY is set.${hasPreviousAnalysis ? ' Previous completed analysis is still shown.' : ''}`,
+      )
     }
   }
 
@@ -800,7 +1149,9 @@ export default function CaseDetail({ onNavigate }) {
     ? 'bg-warning/15 text-warning'
     : analysisStatus === 'completed'
       ? 'bg-success/12 text-success'
-      : 'bg-surface text-on-surface-variant'
+      : analysisStatus === 'failed'
+        ? 'bg-error/10 text-error'
+        : 'bg-surface text-on-surface-variant'
 
   if (loading) {
     return (
@@ -842,6 +1193,33 @@ export default function CaseDetail({ onNavigate }) {
               </div>
               <div className="h-3 rounded-full bg-surface-container overflow-hidden">
                 <div className={`h-full rounded-full ${getProgressTone(derived.readiness)}`} style={{ width: `${derived.readiness}%` }} />
+              </div>
+            </div>
+
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+              <div className="rounded-2xl bg-surface-container-low px-4 py-4">
+                <p className="text-xs uppercase tracking-[0.16em] text-on-surface-variant mb-2">Profile</p>
+                <p className={`text-sm font-semibold ${derived.readinessBreakdown.profile.complete ? 'text-success' : 'text-error'}`}>
+                  {derived.readinessBreakdown.profile.status}
+                </p>
+              </div>
+              <div className="rounded-2xl bg-surface-container-low px-4 py-4">
+                <p className="text-xs uppercase tracking-[0.16em] text-on-surface-variant mb-2">Documents</p>
+                <p className="text-sm font-semibold text-on-surface">
+                  {derived.readinessBreakdown.documents.completed} / {derived.readinessBreakdown.documents.total}
+                </p>
+              </div>
+              <div className="rounded-2xl bg-surface-container-low px-4 py-4">
+                <div className="flex flex-wrap items-start justify-between gap-2 mb-2">
+                  <p className="text-xs uppercase tracking-[0.16em] text-on-surface-variant">Risk Clearance</p>
+                  <span className={`inline-flex rounded-full px-2.5 py-1 text-xs font-semibold ${getRiskTone(derived.riskLevel)}`}>
+                    {derived.riskLevel} severity
+                  </span>
+                </div>
+                <p className={`text-sm font-semibold ${derived.readinessBreakdown.risk.cleared ? 'text-success' : 'text-warning'}`}>
+                  {derived.readinessBreakdown.risk.status}
+                </p>
+                <p className="mt-2 text-xs leading-5 text-on-surface-variant">{derived.riskClearanceReason}</p>
               </div>
             </div>
 
@@ -888,110 +1266,160 @@ export default function CaseDetail({ onNavigate }) {
     </SectionCard>
   )
 
-  const renderDocuments = () => (
-    <SectionCard title="Documents" description="Upload files, review evidence, and check required categories." icon={FileText}>
-      <div className="grid grid-cols-1 xl:grid-cols-[minmax(0,1fr)_300px] gap-6">
-        <div className="space-y-4">
-          <div className="flex flex-wrap gap-3">
-            <div className="space-y-3">
-              <select
-                value={selectedCategory}
-                onChange={(event) => setSelectedCategory(event.target.value)}
-                className={`rounded-xl border bg-surface px-3 py-2 text-sm text-on-surface transition-colors ${
-                  selectedCategoryUploaded
-                    ? 'border-success/40 shadow-[0_0_0_1px_rgba(34,197,94,0.08)]'
-                    : 'border-warning/35 shadow-[0_0_0_1px_rgba(245,158,11,0.08)]'
-                }`}
-              >
-                {allCategories.map((category) => (
-                  <option key={category} value={category}>{category}</option>
-                ))}
-              </select>
-              <div className="flex flex-wrap gap-2">
-                {allCategories.map((category) => {
-                  const uploaded = (caseFile?.documents || []).some((document) => document.category === category)
-                  return (
-                    <div
-                      key={category}
-                      className={`inline-flex items-center gap-2 rounded-full px-3 py-1.5 text-xs ${
-                        uploaded
-                          ? 'bg-success/10 text-success'
-                          : 'bg-surface-container text-on-surface-variant'
-                      }`}
-                    >
-                      <span className={`h-2 w-2 rounded-full ${uploaded ? 'bg-success' : 'bg-outline/50'}`} />
-                      <span>{category}</span>
-                    </div>
-                  )
-                })}
-              </div>
+    const renderDocuments = () => {
+    const requiredDocSet = new Set(derived.requiredDocuments.map((item) => item.label))
+    const uploadedDocuments = (caseFile.documents || []).map((doc) => {
+      const normalizedCategory = normalizeUploadedCategory(doc.category)
+      const requiredDoc = derived.requiredDocuments.find((item) => item.label === normalizedCategory)
+      const isExtra = !requiredDocSet.has(normalizedCategory)
+      let status = 'Uploaded'
+      if (isExtra) status = 'Extra / Not Required for Current Profile'
+      else if (requiredDoc?.status === 'needs_review') status = 'Needs Review'
+
+      return {
+        ...doc,
+        normalizedCategory,
+        status,
+      }
+    })
+
+    const statusTone = (status) => {
+      if (status === 'Uploaded') return 'bg-success/12 text-success'
+      if (status === 'Needs Review') return 'bg-warning/20 text-warning'
+      if (status === 'Missing') return 'bg-error/10 text-error'
+      return 'bg-surface-container text-on-surface-variant'
+    }
+
+    return (
+      <SectionCard title="Documents" description="Upload files, review evidence, and check required categories." icon={FileText}>
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-6">
+          <div className="rounded-2xl border border-outline/10 bg-surface px-4 py-4">
+            <p className="text-xs uppercase tracking-[0.14em] text-on-surface-variant">Required Documents</p>
+            <p className="mt-2 text-xl font-bold text-on-surface">{derived.totalCategories}</p>
+            <p className="text-xs text-on-surface-variant mt-1">
+              {derived.completedCategories} / {derived.totalCategories} required documents uploaded
+            </p>
+          </div>
+          <div className="rounded-2xl border border-outline/10 bg-surface px-4 py-4">
+            <p className="text-xs uppercase tracking-[0.14em] text-on-surface-variant">Uploaded Documents</p>
+            <p className="mt-2 text-xl font-bold text-success">{derived.uploadedRequiredCount}</p>
+            <p className="text-xs text-on-surface-variant mt-1">required documents with uploads</p>
+          </div>
+          <div className="rounded-2xl border border-outline/10 bg-surface px-4 py-4">
+            <p className="text-xs uppercase tracking-[0.14em] text-on-surface-variant">Missing Documents</p>
+            <p className="mt-2 text-xl font-bold text-error">{derived.missingRequiredCount}</p>
+            <p className="text-xs text-on-surface-variant mt-1">{derived.needsReviewCount} need review</p>
+          </div>
+        </div>
+
+        <div className="grid grid-cols-1 xl:grid-cols-2 gap-6">
+          <div className="rounded-2xl border border-outline/10 bg-surface p-4">
+            <p className="text-sm font-semibold text-on-surface mb-4">Required Documents Checklist ({derived.profileType})</p>
+            <div className="space-y-5">
+              {Object.entries(derived.groupedRequiredDocuments).map(([groupLabel, items]) => (
+                <div key={groupLabel}>
+                  <p className="text-xs uppercase tracking-[0.14em] text-on-surface-variant mb-2">{groupLabel}</p>
+                  <div className="space-y-2">
+                    {items.map((item) => {
+                      const badge = item.status === 'uploaded' ? 'Uploaded' : item.status === 'needs_review' ? 'Needs Review' : 'Missing'
+                      return (
+                        <div key={item.key} className="rounded-xl border border-outline/10 bg-surface-container-lowest px-3 py-3">
+                          <div className="flex flex-wrap items-center justify-between gap-2">
+                            <div>
+                              <p className="text-sm font-medium text-on-surface">{item.label}</p>
+                              <p className="text-xs text-on-surface-variant">{item.category}</p>
+                            </div>
+                            <span className={`inline-flex rounded-full px-2.5 py-1 text-xs font-semibold ${statusTone(badge)}`}>
+                              {badge}
+                            </span>
+                          </div>
+                          <div className="mt-3 flex items-center gap-2">
+                            {item.status === 'missing' ? (
+                              <button
+                                onClick={() => triggerUploadForType(item.label)}
+                                className="rounded-lg bg-primary px-3 py-1.5 text-xs font-semibold text-white hover:bg-primary/90"
+                              >
+                                Upload
+                              </button>
+                            ) : (
+                              <button
+                                onClick={() => triggerUploadForType(item.label)}
+                                className="rounded-lg border border-outline/20 bg-surface px-3 py-1.5 text-xs font-semibold text-on-surface hover:border-primary/30"
+                              >
+                                Replace
+                              </button>
+                            )}
+                          </div>
+                        </div>
+                      )
+                    })}
+                  </div>
+                </div>
+              ))}
             </div>
           </div>
 
-          <label className="block rounded-2xl border-2 border-dashed border-outline/20 bg-surface px-6 py-10 text-center cursor-pointer hover:border-primary/25 transition-colors">
-            <input type="file" multiple className="hidden" onChange={handleFileInput} />
-            <div className="mx-auto mb-3 flex h-12 w-12 items-center justify-center rounded-2xl bg-primary/10 text-primary">
-              {uploading ? <Loader2 className="w-5 h-5 animate-spin" /> : <Upload className="w-5 h-5" />}
-            </div>
-            <p className="text-sm font-semibold text-on-surface">{uploading ? 'Uploading...' : 'Drag and drop or click to upload'}</p>
-            <p className="mt-1 text-sm text-on-surface-variant">Upload onboarding evidence for this case.</p>
-          </label>
-
-          <div className="space-y-3">
-            {(caseFile.documents || []).length > 0 ? (
-              (caseFile.documents || []).map((doc) => (
-                <div key={doc.id} className="flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-outline/10 bg-surface p-4">
-                  <div className="min-w-0">
-                    <div className="flex items-center gap-2">
-                      <FileText className="w-4 h-4 text-on-surface-variant" />
-                      <p className="text-sm font-medium text-on-surface truncate">{doc.name}</p>
+          <div className="space-y-6">
+            <div className="rounded-2xl border border-outline/10 bg-surface p-4">
+              <p className="text-sm font-semibold text-on-surface mb-4">Uploaded Documents</p>
+              {uploadedDocuments.length > 0 ? (
+                <div className="space-y-3">
+                  {uploadedDocuments.map((doc) => (
+                    <div key={doc.id} className="rounded-xl border border-outline/10 bg-surface-container-lowest p-3">
+                      <div className="flex flex-wrap items-center justify-between gap-2">
+                        <p className="text-sm font-medium text-on-surface">{doc.name}</p>
+                        <span className={`inline-flex rounded-full px-2.5 py-1 text-xs font-semibold ${statusTone(doc.status)}`}>
+                          {doc.status}
+                        </span>
+                      </div>
+                      <p className="mt-1 text-xs text-on-surface-variant">{doc.normalizedCategory} • {doc.uploader} • {formatDate(doc.uploadedAt)}</p>
+                      <div className="mt-3 flex items-center gap-2">
+                        {!doc.status.startsWith('Extra') ? (
+                          <button
+                            onClick={() => triggerUploadForType(doc.normalizedCategory)}
+                            className="rounded-lg border border-outline/20 bg-surface px-3 py-1.5 text-xs font-semibold text-on-surface hover:border-primary/30"
+                          >
+                            Replace
+                          </button>
+                        ) : null}
+                        <button onClick={() => handleRemoveDocument(doc.id)} className="text-xs font-medium text-error hover:underline">
+                          Remove
+                        </button>
+                      </div>
                     </div>
-                    <p className="mt-1 text-xs text-on-surface-variant">{doc.category} • {doc.uploader} • {doc.size || 'File added'}</p>
-                  </div>
-                  <div className="flex items-center gap-3">
-                    <span className="text-xs text-on-surface-variant">{formatDate(doc.uploadedAt)}</span>
-                    <button onClick={() => handleRemoveDocument(doc.id)} className="text-xs font-medium text-error hover:underline">
-                      Remove
-                    </button>
-                  </div>
+                  ))}
                 </div>
-              ))
-            ) : (
-              <div className="rounded-2xl border border-outline/10 bg-surface p-4">
+              ) : (
                 <p className="text-sm text-on-surface-variant">No documents uploaded yet.</p>
-              </div>
-            )}
-          </div>
-        </div>
+              )}
+            </div>
 
-        <div className="rounded-2xl border border-outline/10 bg-surface p-4">
-          <p className="text-sm font-semibold text-on-surface mb-4">Required Document Checklist</p>
-          <div className="space-y-3">
-            {getRequiredDocumentCategories().map((category) => {
-              const present = (caseFile.documents || []).some((doc) => doc.category === category)
-              return (
-                <div key={category} className="flex items-center justify-between gap-3 rounded-xl bg-surface-container-lowest px-3 py-3">
-                  <span className="text-sm text-on-surface">{category}</span>
-                  {present ? (
-                    <span className="inline-flex items-center gap-1 text-xs text-success">
-                      <CheckCircle2 className="w-4 h-4" />
-                      Complete
-                    </span>
-                  ) : (
-                    <span className="inline-flex items-center gap-1 text-xs text-error">
-                      <AlertCircle className="w-4 h-4" />
-                      Missing
-                    </span>
-                  )}
+            <div className="rounded-2xl border border-outline/10 bg-surface p-4">
+              <p className="text-sm font-semibold text-on-surface mb-4">Missing Documents</p>
+              {derived.missingRequiredDocuments.length > 0 ? (
+                <div className="space-y-3">
+                  {derived.missingRequiredDocuments.map((item) => (
+                    <div key={item.key} className="rounded-xl border border-error/20 bg-error/5 p-3">
+                      <p className="text-sm font-semibold text-on-surface">{item.label}</p>
+                      <p className="mt-1 text-xs text-on-surface-variant">{item.missingReason}</p>
+                      <button
+                        onClick={() => triggerUploadForType(item.label)}
+                        className="mt-3 rounded-lg bg-primary px-3 py-1.5 text-xs font-semibold text-white hover:bg-primary/90"
+                      >
+                        Upload
+                      </button>
+                    </div>
+                  ))}
                 </div>
-              )
-            })}
+              ) : (
+                <p className="text-sm text-success">All required documents are uploaded.</p>
+              )}
+            </div>
           </div>
         </div>
-      </div>
-    </SectionCard>
-  )
-
+      </SectionCard>
+    )
+  }
   const renderAiInsights = () => (
     <SectionCard
       title="AI Insights"
@@ -1008,25 +1436,73 @@ export default function CaseDetail({ onNavigate }) {
         </button>
       )}
     >
-      <div className="mb-5 flex flex-wrap gap-3">
-        <div className="rounded-2xl border border-outline/10 bg-surface px-4 py-3">
-          <p className="text-[11px] uppercase tracking-[0.16em] text-on-surface-variant mb-1">Status</p>
-          <span className={`inline-flex items-center rounded-full px-3 py-1 text-xs font-semibold ${analysisStatusTone}`}>
-            {analysisStatus === 'not-run' ? 'Not Run' : analysisStatus === 'processing' ? 'Processing' : 'Completed'}
-          </span>
-        </div>
-        <div className="rounded-2xl border border-outline/10 bg-surface px-4 py-3">
-          <p className="text-[11px] uppercase tracking-[0.16em] text-on-surface-variant mb-1">Last analyzed</p>
-          <p className="text-sm font-medium text-on-surface">{derived.analysisData.updatedAt ? formatDate(derived.analysisData.updatedAt) : '--'}</p>
-        </div>
-        <div className="rounded-2xl border border-outline/10 bg-surface px-4 py-3">
-          <p className="text-[11px] uppercase tracking-[0.16em] text-on-surface-variant mb-1">Confidence Level</p>
-          <span className={`inline-flex items-center rounded-full px-3 py-1 text-xs font-semibold ${getConfidenceTone(derived.analysisData.confidence || 'Low')}`}>
-            {derived.analysisData.confidence || 'Low'}
-          </span>
-          <p className="mt-2 max-w-[240px] text-xs leading-5 text-on-surface-variant">
-            {derived.analysisData.confidenceExplanation || 'Confidence will update after AI analysis runs.'}
-          </p>
+      {(() => {
+        const visibleActions = Array.from(new Map(
+          derived.analysisData.suggestions
+            .map((suggestion) => ({
+              text: formatAiText(suggestion, ''),
+              priority: getActionPriority(suggestion),
+              uploadType: getUploadTypeForAction(suggestion),
+            }))
+            .filter((action) => action.text && action.priority !== 'Low')
+            .map((action) => ({
+              ...action,
+              uploadedCount: getUploadedEvidenceCount(caseFile, action.uploadType),
+              evidenceLabel: action.priority === 'High' ? 'Evidence needed' : 'Recommended',
+            }))
+            .map((action) => [action.text.toLowerCase(), action]),
+        ).values())
+
+        return (
+          <>
+      <div className="mb-6 rounded-2xl border border-outline/10 bg-surface p-4">
+        <div className="grid grid-cols-1 gap-4 xl:grid-cols-[220px_minmax(0,1fr)]">
+          <div className="grid grid-cols-2 gap-3 xl:grid-cols-1">
+            <div className="rounded-xl bg-surface-container-lowest px-4 py-3">
+              <p className="text-[11px] uppercase tracking-[0.16em] text-on-surface-variant mb-2">Status</p>
+              <span className={`inline-flex items-center rounded-full px-3 py-1 text-xs font-semibold ${analysisStatusTone}`}>
+                {analysisStatus === 'not-run' ? 'Not Run' : analysisStatus === 'processing' ? 'Processing' : analysisStatus === 'failed' ? 'Failed' : 'Completed'}
+              </span>
+            </div>
+            <div className="rounded-xl bg-surface-container-lowest px-4 py-3">
+              <p className="text-[11px] uppercase tracking-[0.16em] text-on-surface-variant mb-2">Last Analyzed</p>
+              <p className="text-sm font-semibold text-on-surface">{derived.analysisData.updatedAt ? formatDateTime(derived.analysisData.updatedAt) : '--'}</p>
+            </div>
+          </div>
+
+          <div className="rounded-xl bg-surface-container-lowest px-4 py-3">
+            <div className="flex flex-wrap items-start justify-between gap-3">
+              <div>
+                <p className="text-[11px] uppercase tracking-[0.16em] text-on-surface-variant mb-2">Evidence Confidence</p>
+                <p className="max-w-2xl text-sm leading-6 text-on-surface-variant">
+                  {derived.analysisData.confidenceExplanation || 'Confidence will update after AI analysis runs.'}
+                </p>
+              </div>
+              <span className={`inline-flex items-center rounded-full px-3 py-1 text-xs font-semibold ${getConfidenceTone(derived.analysisData.confidence || 'Low')}`}>
+                Overall: {derived.analysisData.confidence || 'Low'}
+              </span>
+            </div>
+
+            {derived.analysisData.confidenceItems?.length > 0 ? (
+              <div className="mt-4 grid grid-cols-1 gap-3 lg:grid-cols-3">
+                {derived.analysisData.confidenceItems.map((item) => (
+                  <div key={item.label} className="rounded-xl border border-outline/10 bg-surface px-3 py-3">
+                    <div className="flex items-center justify-between gap-2">
+                      <p className="text-sm font-semibold text-on-surface">{item.label}</p>
+                      <span className={`rounded-full px-2.5 py-1 text-xs font-semibold ${getConfidenceTone(item.level)}`}>
+                        {item.level}
+                      </span>
+                    </div>
+                    {item.detail ? (
+                      <p className="mt-2 text-xs leading-5 text-on-surface-variant">{item.detail}</p>
+                    ) : (
+                      <p className="mt-2 text-xs leading-5 text-on-surface-variant">Supported by uploaded evidence.</p>
+                    )}
+                  </div>
+                ))}
+              </div>
+            ) : null}
+          </div>
         </div>
       </div>
 
@@ -1085,11 +1561,87 @@ export default function CaseDetail({ onNavigate }) {
               <h3 className="text-sm font-semibold text-on-surface">Suggested Actions</h3>
             </div>
             <div className="space-y-3">
-              {derived.analysisData.suggestions.map((suggestion) => (
-                <div key={suggestion} className="flex items-start gap-3 rounded-xl bg-surface-container-lowest px-4 py-3">
-                  <CheckCircle2 className="w-4 h-4 text-primary mt-0.5" />
-                  <p className="text-sm leading-6 text-on-surface">{suggestion}</p>
+              {visibleActions.length > 0 ? visibleActions.map((action) => (
+                <div
+                  key={action.text}
+                  className={`rounded-xl border px-4 py-3 ${
+                    action.uploadedCount > 0
+                      ? 'border-success/15 bg-success/5'
+                      : 'border-transparent bg-surface-container-lowest'
+                  }`}
+                >
+                  <div className="flex items-start gap-3">
+                    <CheckCircle2 className={`w-4 h-4 mt-0.5 ${action.uploadedCount > 0 ? 'text-success' : 'text-primary'}`} />
+                    <div className="min-w-0 flex-1">
+                      <div className="flex flex-wrap items-center gap-2">
+                        <span className={`rounded-full px-2.5 py-1 text-xs font-semibold ${getPriorityTone(action.priority)}`}>
+                          {action.priority}
+                        </span>
+                        {action.uploadType ? (
+                          <span className={`rounded-full px-2.5 py-1 text-xs font-semibold ${
+                            action.uploadedCount > 0 ? 'bg-success/12 text-success' : 'bg-surface text-on-surface-variant'
+                          }`}>
+                            {action.uploadedCount > 0 ? `Uploaded (${action.uploadedCount})` : action.evidenceLabel}
+                          </span>
+                        ) : null}
+                      </div>
+                      <p className="mt-2 text-sm leading-6 text-on-surface">{action.text}</p>
+                      {action.uploadType ? (
+                        <button
+                          onClick={() => triggerUploadForType(action.uploadType)}
+                          className={`mt-3 rounded-lg px-3 py-1.5 text-xs font-semibold transition-colors ${
+                            action.uploadedCount > 0
+                              ? 'border border-outline/20 bg-surface text-on-surface hover:border-primary/30'
+                              : 'bg-primary text-white hover:bg-primary/90'
+                          }`}
+                        >
+                          {action.uploadedCount > 0 ? 'Replace evidence' : action.priority === 'High' ? 'Upload evidence' : 'Upload optional evidence'}
+                        </button>
+                      ) : null}
+                    </div>
+                  </div>
                 </div>
+              )) : (
+                <div className="rounded-xl bg-success/5 border border-success/10 px-4 py-3">
+                  <p className="text-sm text-success">No medium or high priority follow-up actions.</p>
+                </div>
+              )}
+              {derived.analysisData.missingSupportingEvidence
+                .filter((item) => getActionPriority(`${item.document} ${item.issue} ${item.reason}`) === 'High')
+                .map((item) => (
+                (() => {
+                  const uploadedCount = getUploadedEvidenceCount(caseFile, item.document)
+                  const priority = getActionPriority(`${item.document} ${item.issue} ${item.reason}`)
+                  return (
+                <div key={item.id} className={`rounded-xl border px-4 py-3 ${uploadedCount > 0 ? 'border-success/15 bg-success/5' : 'border-warning/20 bg-warning/5'}`}>
+                  <div className="flex flex-wrap items-start justify-between gap-3">
+                    <div>
+                      <p className="text-sm font-semibold text-on-surface">{item.document}</p>
+                      <div className="mt-2 flex flex-wrap gap-2">
+                        <span className={`inline-flex rounded-full px-2.5 py-1 text-xs font-semibold ${getPriorityTone(priority)}`}>
+                          {priority}
+                        </span>
+                        <span className={`inline-flex rounded-full px-2.5 py-1 text-xs font-semibold ${uploadedCount > 0 ? 'bg-success/12 text-success' : 'bg-surface text-on-surface-variant'}`}>
+                          {uploadedCount > 0 ? `Uploaded (${uploadedCount})` : 'Evidence needed'}
+                        </span>
+                      </div>
+                    </div>
+                    <button
+                      onClick={() => triggerUploadForType(item.document)}
+                      className={`rounded-lg px-3 py-1.5 text-xs font-semibold transition-colors ${
+                        uploadedCount > 0
+                          ? 'border border-outline/20 bg-surface text-on-surface hover:border-primary/30'
+                          : 'bg-primary text-white hover:bg-primary/90'
+                      }`}
+                    >
+                      {uploadedCount > 0 ? 'Replace evidence' : 'Upload evidence'}
+                    </button>
+                  </div>
+                  <p className="mt-1 text-sm text-on-surface-variant">{item.issue}</p>
+                  {item.reason ? <p className="mt-1 text-xs text-on-surface-variant">{item.reason}</p> : null}
+                </div>
+                  )
+                })()
               ))}
             </div>
           </div>
@@ -1112,6 +1664,9 @@ export default function CaseDetail({ onNavigate }) {
           </div>
         </div>
       </div>
+          </>
+        )
+      })()}
     </SectionCard>
   )
 
@@ -1144,71 +1699,145 @@ export default function CaseDetail({ onNavigate }) {
     </SectionCard>
   )
 
-  const renderRiskIssues = () => (
-    <SectionCard title="Risk & Issues" description="Severity-based flags, inconsistencies, and next actions." icon={ShieldAlert}>
-      <div className="grid grid-cols-1 xl:grid-cols-2 gap-6">
-        <div className="space-y-4">
+  const renderRiskIssues = () => {
+    const aiHasRun = Boolean(analysisSnapshot || caseFile?.aiAnalysis)
+    const aiIsFresh = hasFreshAiAnalysis(caseFile)
+    const highRisks = aiHasRun
+      ? derived.analysisData.risks.filter((risk) => ['high', 'critical'].includes(String(risk.severity || '').toLowerCase()))
+      : []
+    const realMismatches = aiHasRun ? derived.analysisData.mismatches : []
+    const highPriorityActions = aiHasRun
+      ? derived.analysisData.suggestions
+        .map((suggestion) => ({
+          text: formatAiText(suggestion, ''),
+          priority: getActionPriority(suggestion),
+          uploadType: getUploadTypeForAction(suggestion),
+        }))
+        .filter((action) => action.text && action.priority === 'High')
+      : []
+    const blockers = [
+      ...derived.missingRequiredDocuments.map((item) => ({
+        title: item.label,
+        severity: 'High',
+        description: item.missingReason || 'Required document is missing.',
+        action: 'Upload required document.',
+        uploadType: item.label,
+      })),
+      ...(!aiHasRun ? [{
+        title: 'AI analysis not run',
+        severity: 'High',
+        description: 'Risk clearance requires AI analysis on the uploaded case documents.',
+        action: 'Run AI Analysis.',
+      }] : []),
+      ...(aiHasRun && !aiIsFresh ? [{
+        title: 'AI analysis is stale',
+        severity: 'High',
+        description: 'Documents changed after the last analysis, so risk clearance needs a fresh run.',
+        action: 'Run AI Analysis again.',
+      }] : []),
+      ...highRisks.map((risk) => ({
+        title: risk.title,
+        severity: risk.severity,
+        description: risk.description || risk.rationale || 'High-priority risk requires review.',
+        action: risk.nextAction || 'Review and resolve this risk before submission.',
+      })),
+      ...highPriorityActions.map((action) => ({
+        title: 'High-priority AI follow-up',
+        severity: 'High',
+        description: action.text,
+        action: action.uploadType ? 'Upload requested evidence.' : 'Resolve this follow-up before submission.',
+        uploadType: action.uploadType,
+      })),
+    ]
+
+    return (
+      <SectionCard title="Risk & Issues" description="Submission blockers and compliance-critical findings." icon={ShieldAlert}>
+        <div className="grid grid-cols-1 xl:grid-cols-[minmax(0,1fr)_360px] gap-6">
           <div className="rounded-2xl border border-outline/10 bg-surface p-4">
-            <h3 className="text-sm font-semibold text-on-surface mb-4">Risk Flags</h3>
+            <div className="flex flex-wrap items-center justify-between gap-3 mb-4">
+              <h3 className="text-sm font-semibold text-on-surface">Submission Blockers</h3>
+              <span className={`inline-flex rounded-full px-3 py-1 text-xs font-semibold ${blockers.length > 0 ? 'bg-error/10 text-error' : 'bg-success/12 text-success'}`}>
+                {blockers.length > 0 ? `${blockers.length} open` : 'Clear'}
+              </span>
+            </div>
             <div className="space-y-3">
-              {derived.riskFlags.length > 0 ? derived.riskFlags.map((flag) => (
-                <div key={flag.title} className="rounded-xl bg-surface-container-lowest px-4 py-4">
-                  <div className="flex flex-wrap items-center justify-between gap-2">
-                    <p className="text-sm font-semibold text-on-surface">{flag.title}</p>
-                    <span className={`inline-flex items-center rounded-full px-3 py-1 text-xs font-semibold ${getSeverityTone(flag.severity)}`}>
-                      {flag.severity}
-                    </span>
+              {blockers.length > 0 ? blockers.map((item, index) => (
+                <div key={`${item.title}-${index}`} className="rounded-xl border border-error/15 bg-error/5 px-4 py-4">
+                  <div className="flex flex-wrap items-start justify-between gap-3">
+                    <div className="min-w-0">
+                      <p className="text-sm font-semibold text-on-surface">{item.title}</p>
+                      <span className={`mt-2 inline-flex rounded-full px-2.5 py-1 text-xs font-semibold ${getSeverityTone(item.severity)}`}>
+                        {item.severity}
+                      </span>
+                    </div>
+                    {item.uploadType ? (
+                      <button
+                        onClick={() => triggerUploadForType(item.uploadType)}
+                        className="rounded-lg bg-primary px-3 py-1.5 text-xs font-semibold text-white hover:bg-primary/90"
+                      >
+                        Upload
+                      </button>
+                    ) : null}
                   </div>
-                  <p className="mt-2 text-sm leading-6 text-on-surface-variant">{flag.description}</p>
+                  <p className="mt-3 text-sm leading-6 text-on-surface-variant">{item.description}</p>
+                  <p className="mt-2 text-xs font-medium text-primary">{item.action}</p>
                 </div>
               )) : (
                 <div className="rounded-xl bg-success/5 border border-success/10 px-4 py-4">
-                  <p className="text-sm text-on-surface">No active risk flags.</p>
+                  <p className="text-sm font-semibold text-success">No submission blockers.</p>
+                  <p className="mt-1 text-sm text-on-surface-variant">Required documents are complete and no high-priority risk findings are open.</p>
                 </div>
               )}
             </div>
           </div>
-        </div>
 
-        <div className="space-y-4">
-          <div className="rounded-2xl border border-outline/10 bg-surface p-4">
-            <h3 className="text-sm font-semibold text-on-surface mb-4">Detected Inconsistencies</h3>
-            <div className="space-y-3">
-              {derived.analysisData.mismatches.map((item) => (
-                <div key={item.label} className="rounded-xl border border-warning/20 bg-warning/5 p-4">
-                  <p className="text-sm font-semibold text-on-surface">{item.label}</p>
-                  <p className="mt-2 text-xs uppercase tracking-[0.14em] text-on-surface-variant">
-                    Detected from: {item.source || 'bank_statement.pdf'}
+          <div className="space-y-4">
+            <div className="rounded-2xl border border-outline/10 bg-surface p-4">
+              <h3 className="text-sm font-semibold text-on-surface mb-4">Risk Clearance</h3>
+              <div className="rounded-xl bg-surface-container-lowest px-4 py-4">
+                <div className="flex flex-wrap items-center justify-between gap-3">
+                  <p className={`text-sm font-semibold ${derived.readinessBreakdown.risk.cleared ? 'text-success' : 'text-warning'}`}>
+                    {derived.readinessBreakdown.risk.status}
                   </p>
-                  <p className="mt-2 text-sm leading-6 text-on-surface-variant">
-                    Declared: <span className="font-medium text-on-surface">{item.declared}</span> | Detected: <span className="font-medium text-warning">{item.detected}</span>
-                  </p>
+                  <span className={`inline-flex rounded-full px-3 py-1 text-xs font-semibold ${getRiskTone(derived.riskLevel)}`}>
+                    {derived.riskLevel} severity
+                  </span>
                 </div>
-              ))}
+                <p className="mt-3 text-sm leading-6 text-on-surface-variant">{derived.riskClearanceReason}</p>
+              </div>
+            </div>
+
+            <div className="rounded-2xl border border-outline/10 bg-surface p-4">
+              <h3 className="text-sm font-semibold text-on-surface mb-4">AI Inconsistencies</h3>
+              <div className="space-y-3">
+                {realMismatches.length > 0 ? realMismatches.map((item) => (
+                  <div key={item.label} className="rounded-xl border border-warning/20 bg-warning/5 p-4">
+                    <p className="text-sm font-semibold text-on-surface">{item.label}</p>
+                    <p className="mt-2 text-xs uppercase tracking-[0.14em] text-on-surface-variant">
+                      Detected from: {item.source || 'bank_statement.pdf'}
+                    </p>
+                    <p className="mt-2 text-sm leading-6 text-on-surface-variant">
+                      Declared: <span className="font-medium text-on-surface">{item.declared}</span> | Detected: <span className="font-medium text-warning">{item.detected}</span>
+                    </p>
+                  </div>
+                )) : (
+                  <div className="rounded-xl bg-success/5 border border-success/10 px-4 py-4">
+                    <p className="text-sm text-success">{aiHasRun ? 'No AI inconsistencies found.' : 'Run AI Analysis to check inconsistencies.'}</p>
+                  </div>
+                )}
+              </div>
             </div>
           </div>
-
-          <div className="rounded-2xl border border-outline/10 bg-surface p-4">
-            <h3 className="text-sm font-semibold text-on-surface mb-4">Suggested Next Actions</h3>
-            <div className="space-y-3">
-              {derived.riskFlags.map((flag) => (
-                <div key={flag.title} className="rounded-xl bg-surface-container-lowest px-4 py-4">
-                  <p className="text-xs uppercase tracking-[0.14em] text-primary mb-2">{flag.title}</p>
-                  <p className="text-sm leading-6 text-on-surface">{flag.nextAction}</p>
-                </div>
-              ))}
-            </div>
-          </div>
         </div>
-      </div>
-    </SectionCard>
-  )
+      </SectionCard>
+    )
+  }
 
   const renderAuditTrail = () => (
     <SectionCard title="Audit Trail" description="Timeline of key actions for this case." icon={History}>
       <div className="relative pl-3">
         <div className="absolute left-[1.45rem] top-2 bottom-2 w-px bg-outline/30" />
-        {derived.auditEntries.map((entry, index) => (
+        {derived.auditEntries.length > 0 ? derived.auditEntries.map((entry, index) => (
           <div key={`${entry.timestamp}-${entry.actor}-${index}`} className="relative flex gap-4 pb-6 last:pb-0">
             <div className="relative z-10 flex h-11 w-11 shrink-0 items-center justify-center rounded-full border border-outline/10 bg-surface-container-lowest shadow-sm">
               <History className="w-4 h-4 text-on-surface" />
@@ -1221,13 +1850,28 @@ export default function CaseDetail({ onNavigate }) {
               <p className="text-sm leading-6 text-on-surface-variant">{entry.action}</p>
             </div>
           </div>
-        ))}
+        )) : (
+          <div className="relative flex gap-4">
+            <div className="relative z-10 flex h-11 w-11 shrink-0 items-center justify-center rounded-full border border-outline/10 bg-surface-container-lowest shadow-sm">
+              <History className="w-4 h-4 text-on-surface" />
+            </div>
+            <div className="flex-1 rounded-2xl border border-outline/10 bg-surface p-4">
+              <p className="text-sm text-on-surface-variant">No recorded audit events yet.</p>
+            </div>
+          </div>
+        )}
       </div>
     </SectionCard>
   )
 
   return (
     <div className="min-h-screen bg-[radial-gradient(circle_at_top_left,_rgba(202,12,26,0.08),_transparent_24%),linear-gradient(180deg,_rgba(255,255,255,1),_rgba(248,247,245,1))] p-6 md:p-8 pb-12">
+      <input
+        ref={documentInputRef}
+        type="file"
+        className="hidden"
+        onChange={handleFileInput}
+      />
       <div className="max-w-7xl mx-auto space-y-5">
         <div className="rounded-[30px] border border-outline/10 bg-surface-container-lowest/95 shadow-ambient overflow-hidden">
           <div className="h-1 gradient-primary" />
@@ -1262,14 +1906,6 @@ export default function CaseDetail({ onNavigate }) {
                 </span>
               </div>
               <button
-                onClick={handleSaveDraft}
-                disabled={saving}
-                className="inline-flex items-center gap-2 rounded-2xl border border-outline/20 bg-surface px-4 py-2 text-sm font-semibold text-on-surface hover:border-primary/20 disabled:opacity-60 transition-colors"
-              >
-                {saving ? <Loader2 className="w-4 h-4 animate-spin" /> : <Save className="w-4 h-4" />}
-                Save Draft
-              </button>
-              <button
                 onClick={handleSubmit}
                 disabled={!canSubmit || submitting}
                 className="inline-flex items-center gap-2 rounded-2xl bg-primary px-4 py-2 text-sm font-semibold text-white hover:bg-primary/90 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
@@ -1282,8 +1918,11 @@ export default function CaseDetail({ onNavigate }) {
 
           <div className="mt-4 grid grid-cols-2 lg:grid-cols-4 gap-3">
             <div className="rounded-2xl border border-outline/10 bg-surface px-4 py-3">
-              <p className="text-[11px] uppercase tracking-[0.16em] text-on-surface-variant mb-1.5">Readiness</p>
-              <p className="text-[1.75rem] font-bold text-on-surface">{derived.readiness}%</p>
+              <p className="text-[11px] uppercase tracking-[0.16em] text-on-surface-variant mb-1.5">Readiness Score</p>
+              <p className={`text-[1.75rem] font-bold ${derived.readiness >= 85 ? 'text-success' : derived.readiness >= 50 ? 'text-warning' : 'text-error'}`}>{derived.readiness}%</p>
+              <div className="mt-2 h-1.5 rounded-full bg-surface-container overflow-hidden">
+                <div className={`h-full rounded-full ${getProgressTone(derived.readiness)}`} style={{ width: `${derived.readiness}%` }} />
+              </div>
             </div>
             <div className="rounded-2xl border border-outline/10 bg-surface px-4 py-3">
               <p className="text-[11px] uppercase tracking-[0.16em] text-on-surface-variant mb-1.5">Documents</p>
@@ -1294,6 +1933,9 @@ export default function CaseDetail({ onNavigate }) {
               <span className={`inline-flex items-center rounded-full px-3 py-1 text-sm font-semibold ${getRiskTone(derived.riskLevel)}`}>
                 {derived.riskLevel}
               </span>
+              <p className="mt-2 text-xs leading-5 text-on-surface-variant">
+                Clearance: <span className={derived.readinessBreakdown.risk.cleared ? 'text-success' : 'text-warning'}>{derived.readinessBreakdown.risk.status}</span>
+              </p>
             </div>
             <div className="rounded-2xl border border-outline/10 bg-surface px-4 py-3">
               <p className="text-[11px] uppercase tracking-[0.16em] text-on-surface-variant mb-1.5">Updated</p>
@@ -1304,6 +1946,11 @@ export default function CaseDetail({ onNavigate }) {
           {message ? (
             <div className="mt-4 rounded-2xl border border-outline/10 bg-surface px-4 py-3 text-sm text-on-surface-variant">
               {message}
+            </div>
+          ) : null}
+          {!canSubmit ? (
+            <div className="mt-3 rounded-2xl border border-outline/10 bg-surface px-4 py-3 text-xs text-on-surface-variant">
+              Submit disabled until profile is valid, all required document categories are complete, AI analysis has run after the latest upload, and no high/critical risk flags remain.
             </div>
           ) : null}
           </div>
@@ -1337,3 +1984,5 @@ export default function CaseDetail({ onNavigate }) {
     </div>
   )
 }
+
+

@@ -20,6 +20,7 @@ import FollowUp from './screens/FollowUp'
 import WealthReview from './screens/WealthReview'
 import SavedCaseFiles from './screens/SavedCaseFiles'
 import CaseDetail from './screens/CaseDetail'
+import ComplianceCaseReview from './screens/ComplianceCaseReview'
 
 // Legacy screens for compatibility
 import ClientIntake from './screens/ClientIntake'
@@ -86,7 +87,7 @@ function App() {
       case 'dashboard':
         return (
           <AppLayout activeItem="dashboard" headerProps={selectedRole === 'rm' ? { showSearch: false } : undefined}>
-            {selectedRole === 'rm' ? <RMDashboard onNavigate={handleNavigate} /> : selectedRole === 'compliance' ? <ComplianceReviewerDashboard /> : selectedRole === 'ops' ? <OpsOnboardingDashboard /> : <Dashboard />}
+            {selectedRole === 'rm' ? <RMDashboard onNavigate={handleNavigate} /> : selectedRole === 'compliance' ? <ComplianceReviewerDashboard onNavigate={handleNavigate} /> : selectedRole === 'ops' ? <OpsOnboardingDashboard onNavigate={handleNavigate} /> : <Dashboard />}
           </AppLayout>
         )
       
@@ -162,6 +163,13 @@ function App() {
         return (
           <AppLayout activeItem="dashboard" headerProps={selectedRole === 'rm' ? { showSearch: false } : undefined}>
             <CaseDetail onNavigate={handleNavigate} />
+          </AppLayout>
+        )
+
+      case 'compliance-case-review':
+        return (
+          <AppLayout activeItem="dashboard" headerProps={{ showSearch: false }}>
+            <ComplianceCaseReview onNavigate={handleNavigate} />
           </AppLayout>
         )
       

@@ -11,9 +11,9 @@ import {
   Search,
   ShieldAlert,
 } from 'lucide-react'
-import { getAllCaseFiles, getRequiredDocumentCategories, hasRequiredFields, setActiveCaseId } from '../lib/caseFiles'
+import { clearActiveCaseId, getAllCaseFiles, getDocumentCompletionSummary, getReadinessScore, setActiveCaseId } from '../lib/caseFiles'
 
-const statusOrder = ['Draft', 'Missing Documents', 'In Review', 'Ready for Review', 'Escalated', 'Approved']
+const statusOrder = ['Draft', 'Missing Documents', 'Pending Review', 'Under Review', 'Escalated', 'Action Required', 'Rejected', 'Approved']
 
 const demoCases = [
   {
@@ -28,7 +28,7 @@ const demoCases = [
   {
     id: 'WF-1108',
     clientName: 'Marcus Lee',
-    status: 'In Review',
+    status: 'Under Review',
     readinessScore: 76,
     lastUpdated: '4/23/2026',
     nextAction: 'Review ownership structure and validate bank statements',
@@ -37,7 +37,7 @@ const demoCases = [
   {
     id: 'WF-1113',
     clientName: 'Isabelle Wong',
-    status: 'Ready for Review',
+    status: 'Pending Review',
     readinessScore: 92,
     lastUpdated: '4/22/2026',
     nextAction: 'Review and submit for compliance',
@@ -72,9 +72,15 @@ const demoCases = [
   },
 ]
 
-function formatDate(value) {
+function formatDateTime(value) {
   if (!value) return '--'
-  return new Date(value).toLocaleDateString()
+  return new Date(value).toLocaleString([], {
+    year: 'numeric',
+    month: 'numeric',
+    day: 'numeric',
+    hour: 'numeric',
+    minute: '2-digit',
+  })
 }
 
 function getStatusStyle(status) {
@@ -83,10 +89,14 @@ function getStatusStyle(status) {
       return 'bg-secondary text-secondary-foreground'
     case 'Missing Documents':
       return 'bg-warning/15 text-warning'
-    case 'In Review':
+    case 'Under Review':
       return 'bg-tertiary/12 text-tertiary'
-    case 'Ready for Review':
+    case 'Pending Review':
       return 'bg-success/12 text-success'
+    case 'Action Required':
+      return 'bg-warning/15 text-warning'
+    case 'Rejected':
+      return 'bg-error/10 text-error'
     case 'Escalated':
       return 'bg-error/10 text-error'
     case 'Approved':
@@ -111,8 +121,10 @@ function getReadinessBarStyle(score) {
 function deriveNextAction(status, missingCategoriesCount) {
   if (status === 'Draft') return 'Complete intake profile'
   if (status === 'Missing Documents') return missingCategoriesCount > 0 ? `Upload ${missingCategoriesCount} remaining required document${missingCategoriesCount > 1 ? 's' : ''}` : 'Upload required documents'
-  if (status === 'In Review') return 'Review and confirm case information'
-  if (status === 'Ready for Review') return 'Review and submit for compliance'
+  if (status === 'Pending Review') return 'Waiting for Compliance to start review'
+  if (status === 'Under Review') return 'Review and confirm case information by compliance'
+  if (status === 'Action Required') return 'Resolve Compliance feedback'
+  if (status === 'Rejected') return 'Review rejection reason'
   if (status === 'Escalated') return 'Address flagged issues with compliance'
   if (status === 'Approved') return 'No action required'
   return 'Open case and review'
@@ -121,7 +133,10 @@ function deriveNextAction(status, missingCategoriesCount) {
 function deriveIssues(status, missingCategories) {
   if (status === 'Escalated') return 'High-priority issue flagged for RM follow-up'
   if (missingCategories.length > 0) return `Missing: ${missingCategories.slice(0, 2).join(', ')}${missingCategories.length > 2 ? ` +${missingCategories.length - 2} more` : ''}`
-  if (status === 'Ready for Review') return 'Documentation complete and ready for handoff'
+  if (status === 'Pending Review') return 'Documentation complete and waiting in Compliance queue'
+  if (status === 'Under Review') return 'Compliance review in progress'
+  if (status === 'Action Required') return 'Compliance requested additional information'
+  if (status === 'Rejected') return 'Case rejected by Compliance'
   if (status === 'Approved') return 'Case approved and archived'
   return 'No blockers identified'
 }
@@ -140,30 +155,33 @@ export default function RMDashboard({ onNavigate }) {
     window.setTimeout(() => setCopiedCaseId(''), 1500)
   }
 
+  const handleCreateNewCase = () => {
+    clearActiveCaseId()
+    onNavigate?.('new-case')
+  }
+
   useEffect(() => {
     let isMounted = true
 
     const loadCases = async () => {
-      const requiredCategories = getRequiredDocumentCategories()
       const storedCases = await getAllCaseFiles()
       if (!isMounted) return
 
-      const mappedCases = storedCases.map((item) => {
-        const uploadedCategories = new Set((item.documents || []).map((doc) => doc.category))
-        const missingCategories = requiredCategories.filter((category) => !uploadedCategories.has(category))
-        const completedDocRatio = requiredCategories.length === 0 ? 0 : (requiredCategories.length - missingCategories.length) / requiredCategories.length
-        const readinessScore = Math.round((completedDocRatio * 75) + (hasRequiredFields(item) ? 25 : 0))
+      const mappedCases = await Promise.all(storedCases.map(async (item) => {
+        const completionSummary = getDocumentCompletionSummary(item)
+        const missingCategories = completionSummary.missingCategoryLabels
+        const readiness = await getReadinessScore(item.id)
 
         return {
           id: item.id,
           clientName: item.clientName,
           status: item.status,
-          readinessScore,
-          lastUpdated: formatDate(item.updatedAt),
+          readinessScore: readiness?.percentage ?? 0,
+          lastUpdated: formatDateTime(item.updatedAt),
           nextAction: deriveNextAction(item.status, missingCategories.length),
           issues: deriveIssues(item.status, missingCategories),
         }
-      })
+      }))
 
       const mergedCases = [...mappedCases]
       demoCases.forEach((demoItem) => {
@@ -195,16 +213,16 @@ export default function RMDashboard({ onNavigate }) {
     const total = cases.length
     const draft = cases.filter((c) => c.status === 'Draft').length
     const missingDocs = cases.filter((c) => c.status === 'Missing Documents' || c.readinessScore < 50).length
-    const inReview = cases.filter((c) => c.status === 'In Review').length
-    const readyForReview = cases.filter((c) => c.status === 'Ready for Review').length
+    const underReview = cases.filter((c) => c.status === 'Under Review').length
+    const pendingReview = cases.filter((c) => c.status === 'Pending Review').length
     const escalated = cases.filter((c) => c.status === 'Escalated').length
 
     return [
       { label: 'Total Cases', value: total, icon: Briefcase, tone: 'text-on-surface', iconTone: 'bg-surface-container text-on-surface' },
       { label: 'Draft Cases', value: draft, icon: Clock3, tone: 'text-on-surface', iconTone: 'bg-secondary text-secondary-foreground' },
       { label: 'Cases Missing Documents', value: missingDocs, icon: FileWarning, tone: 'text-warning', iconTone: 'bg-warning/15 text-warning' },
-      { label: 'In Review', value: inReview, icon: FolderOpen, tone: 'text-tertiary', iconTone: 'bg-tertiary/12 text-tertiary' },
-      { label: 'Ready for Review', value: readyForReview, icon: CheckCircle2, tone: 'text-success', iconTone: 'bg-success/12 text-success' },
+      { label: 'Pending Review', value: pendingReview, icon: CheckCircle2, tone: 'text-success', iconTone: 'bg-success/12 text-success' },
+      { label: 'Under Review', value: underReview, icon: FolderOpen, tone: 'text-tertiary', iconTone: 'bg-tertiary/12 text-tertiary' },
       { label: 'Escalated Cases', value: escalated, icon: ShieldAlert, tone: 'text-error', iconTone: 'bg-error/10 text-error' },
     ]
   }, [cases])
@@ -220,7 +238,7 @@ export default function RMDashboard({ onNavigate }) {
           </div>
 
           <button
-            onClick={() => onNavigate?.('new-case')}
+            onClick={handleCreateNewCase}
             className="inline-flex items-center gap-2 rounded-2xl bg-primary px-5 py-3 text-sm font-semibold text-white shadow-ambient hover:bg-primary/90 transition-colors"
           >
             <Plus className="w-4 h-4" />
@@ -294,7 +312,7 @@ export default function RMDashboard({ onNavigate }) {
                 {searchQuery ? `No cases match "${searchQuery}". Try a different search or filter.` : 'Start a new client onboarding workflow from this dashboard.'}
               </p>
               <button
-                onClick={() => onNavigate?.('new-case')}
+                onClick={handleCreateNewCase}
                 className="inline-flex items-center gap-2 rounded-2xl bg-primary px-5 py-3 text-sm font-semibold text-white hover:bg-primary/90 transition-colors"
               >
                 <Plus className="w-4 h-4" />

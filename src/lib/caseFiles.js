@@ -11,19 +11,86 @@ const CASES_STORAGE_KEY = 'wealthflow.caseFiles'
 const ACTIVE_CASE_STORAGE_KEY = 'wealthflow.activeCaseId'
 const CASE_COUNTER_STORAGE_KEY = 'wealthflow.caseCounter'
 
-const REQUIRED_DOCUMENT_CATEGORIES = [
-  'Passport / ID',
-  'Bank Statements',
-  'Source of Wealth (SoW)',
-  'Utility Bill',
-  'Tax Residency Bill',
+export const CASE_STATUS = Object.freeze({
+  DRAFT: 'Draft',
+  MISSING_DOCUMENTS: 'Missing Documents',
+  PENDING_REVIEW: 'Pending Review',
+  UNDER_REVIEW: 'Under Review',
+  APPROVED: 'Approved',
+  ACTION_REQUIRED: 'Action Required',
+  REJECTED: 'Rejected',
+  ESCALATED: 'Escalated',
+  READY_FOR_REVIEW: 'Pending Review',
+  IN_REVIEW: 'Under Review',
+  COMPLIANCE_APPROVED: 'Approved',
+})
+
+const ALLOWED_CASE_STATUSES = new Set(Object.values(CASE_STATUS))
+
+export const CLIENT_PROFILE_TYPE = Object.freeze({
+  BUSINESS_OWNER: 'Business Owner',
+  SALARIED_EMPLOYEE: 'Salaried Employee',
+  INVESTOR: 'Investor',
+})
+
+const DOCUMENT_DEFINITIONS = [
+  { key: 'passport_id', label: 'Passport / ID', category: 'KYC Documents', alwaysRequired: true, reason: 'Identity verification is mandatory for KYC onboarding.' },
+  { key: 'address_proof', label: 'Address Proof', category: 'KYC Documents', alwaysRequired: true, reason: 'Address verification is required for customer due diligence.' },
+  { key: 'tax_residency', label: 'Tax Residency', category: 'Tax Documents', alwaysRequired: true, reason: 'CRS/FATCA tax residency evidence is required.' },
+  { key: 'sow_declaration', label: 'SoW Declaration', category: 'SoW / SoF Documents', alwaysRequired: true, reason: 'Source of Wealth declaration is mandatory.' },
+  { key: 'bank_statements_sof', label: 'Bank Statements (Source of Funds)', category: 'SoW / SoF Documents', alwaysRequired: true, reason: 'Bank statements are required to evidence Source of Funds.' },
+
+  { key: 'business_registry_extract', label: 'Business Registry Extract', category: 'Business Evidence', profileTypes: [CLIENT_PROFILE_TYPE.BUSINESS_OWNER], reason: 'Required because profile indicates Business Owner.' },
+  { key: 'shareholding_structure', label: 'Shareholding Structure', category: 'Business Evidence', profileTypes: [CLIENT_PROFILE_TYPE.BUSINESS_OWNER], reason: 'Required because profile indicates Business Owner.' },
+  { key: 'company_financial_statements', label: 'Company Financial Statements', category: 'Business Evidence', profileTypes: [CLIENT_PROFILE_TYPE.BUSINESS_OWNER], reason: 'Required because profile indicates Business Owner.' },
+  { key: 'dividend_statements', label: 'Dividend Statements', category: 'Business Evidence', profileTypes: [CLIENT_PROFILE_TYPE.BUSINESS_OWNER], reason: 'Required because profile indicates Business Owner.' },
+
+  { key: 'payslips', label: 'Payslips', category: 'Employment Evidence', profileTypes: [CLIENT_PROFILE_TYPE.SALARIED_EMPLOYEE], reason: 'Payslips are required because profile indicates Salaried Employee.' },
+  { key: 'employment_contract', label: 'Employment Contract', category: 'Employment Evidence', profileTypes: [CLIENT_PROFILE_TYPE.SALARIED_EMPLOYEE], reason: 'Employment contract is required because profile indicates Salaried Employee.' },
+
+  { key: 'investment_portfolio_statements', label: 'Investment Portfolio Statements', category: 'Investment Evidence', profileTypes: [CLIENT_PROFILE_TYPE.INVESTOR], reason: 'Required because profile indicates Investor.' },
+  { key: 'trade_confirmations', label: 'Trade Confirmations', category: 'Investment Evidence', profileTypes: [CLIENT_PROFILE_TYPE.INVESTOR], reason: 'Required because profile indicates Investor.' },
 ]
 
+const SYSTEM_EDITABLE_STATUSES = new Set([
+  CASE_STATUS.DRAFT,
+  CASE_STATUS.MISSING_DOCUMENTS,
+  CASE_STATUS.PENDING_REVIEW,
+  CASE_STATUS.ACTION_REQUIRED,
+])
+
 function normalizeCategory(category) {
-  if (category === 'Tax Residency Certificate') {
-    return 'Tax Residency Bill'
+  const normalized = String(category || '').trim()
+
+  const legacyMap = {
+    'Passport / ID': 'Passport / ID',
+    Passport: 'Passport / ID',
+    'National ID': 'Passport / ID',
+    'Utility Bill': 'Address Proof',
+    'Utility Bill (<=3 months)': 'Address Proof',
+    'Bank Statement with Address': 'Address Proof',
+    'Government-Issued Address Letter': 'Address Proof',
+    'Tax Residency Bill': 'Tax Residency',
+    'Tax Residency Certificate': 'Tax Residency',
+    'Tax Residency Self-Certification': 'Tax Residency',
+    'Tax Identification Number (TIN) Evidence': 'Tax Residency',
+    'FATCA Declaration': 'Tax Residency',
+    'Source of Wealth (SoW)': 'SoW Declaration',
+    'SoW Declaration': 'SoW Declaration',
+    'Bank Statements': 'Bank Statements (Source of Funds)',
+    'Recent Bank Statements (3-6 months)': 'Bank Statements (Source of Funds)',
+    'Transfer / Liquidity Proof': 'Bank Statements (Source of Funds)',
+    'Business Registry Extract': 'Business Registry Extract',
+    'Shareholding Structure': 'Shareholding Structure',
+    'Company Financial Statements': 'Company Financial Statements',
+    'Dividend Statements': 'Dividend Statements',
+    'Payslips': 'Payslips',
+    'Employment Contract': 'Employment Contract',
+    'Investment Portfolio Statements': 'Investment Portfolio Statements',
+    'Trade Confirmations': 'Trade Confirmations',
   }
-  return category
+
+  return legacyMap[normalized] || normalized
 }
 
 function safeParse(value, fallback) {
@@ -59,15 +126,427 @@ function normalizeDateValue(value) {
 function normalizeCaseFile(caseFile) {
   if (!caseFile) return null
 
+  const statusAliases = {
+    'Ready for Review': CASE_STATUS.PENDING_REVIEW,
+    'In Review': CASE_STATUS.UNDER_REVIEW,
+    'Compliance Approved': CASE_STATUS.APPROVED,
+  }
+  const statusValue = statusAliases[caseFile.status] || caseFile.status
+  const normalizedStatus = ALLOWED_CASE_STATUSES.has(statusValue) ? statusValue : CASE_STATUS.DRAFT
+  const rawStatusHistory = Array.isArray(caseFile.statusHistory) ? caseFile.statusHistory : []
+  const rawDocuments = Array.isArray(caseFile.documents) ? caseFile.documents : []
+  const rawComments = Array.isArray(caseFile.comments) ? caseFile.comments : []
+
   return {
     ...caseFile,
+    status: normalizedStatus,
     createdAt: normalizeDateValue(caseFile.createdAt),
     updatedAt: normalizeDateValue(caseFile.updatedAt),
     submittedAt: normalizeDateValue(caseFile.submittedAt),
-    documents: (caseFile.documents || []).map((document) => ({
+    statusHistory: rawStatusHistory.map((entry) => ({
+      ...entry,
+      timestamp: normalizeDateValue(entry.timestamp) || entry.timestamp || null,
+    })),
+    documents: rawDocuments.map((document) => ({
       ...document,
       uploadedAt: normalizeDateValue(document.uploadedAt) || document.uploadedAt || null,
     })),
+    comments: rawComments.map((comment) => ({
+      ...comment,
+      createdAt: normalizeDateValue(comment.createdAt) || comment.createdAt || null,
+    })),
+  }
+}
+
+function hasNoDocuments(caseFile) {
+  return (caseFile?.documents || []).length === 0
+}
+
+export function getClientProfileType(caseFile) {
+  const occupation = String(caseFile?.occupation || '').toLowerCase()
+  if (/\bbusiness owner\b|\bowner\b|\bfounder\b|\bentrepreneur\b/.test(occupation)) {
+    return CLIENT_PROFILE_TYPE.BUSINESS_OWNER
+  }
+
+  if (/\binvestor\b|\btrader\b|\bportfolio\b|\bfund\b/.test(occupation)) {
+    return CLIENT_PROFILE_TYPE.INVESTOR
+  }
+
+  return CLIENT_PROFILE_TYPE.SALARIED_EMPLOYEE
+}
+
+function getRequiredDocumentDefinitions(caseFile) {
+  const profileType = getClientProfileType(caseFile)
+  return DOCUMENT_DEFINITIONS.filter((definition) => {
+    if (definition.alwaysRequired) return true
+    return (definition.profileTypes || []).includes(profileType)
+  })
+}
+
+function isFatcaApplicable(caseFile) {
+  const nationality = String(caseFile?.nationality || '').toLowerCase()
+  const residence = String(caseFile?.residence || '').toLowerCase()
+  return nationality.includes('united states') || nationality.includes('u.s.') || residence.includes('united states')
+}
+
+function getDocumentsByNormalizedCategory(caseFile) {
+  const documents = Array.isArray(caseFile?.documents) ? caseFile.documents : []
+  return documents.reduce((map, doc) => {
+    const category = normalizeCategory(doc?.category)
+    if (!category) return map
+    if (!map.has(category)) map.set(category, [])
+    map.get(category).push(doc)
+    return map
+  }, new Map())
+}
+
+function createChecklistEntry({
+  id,
+  label,
+  required,
+  state,
+  isSatisfied,
+  missingItems = [],
+  details = '',
+  critical = false,
+}) {
+  return {
+    id,
+    label,
+    required,
+    state,
+    isSatisfied,
+    missingItems,
+    details,
+    critical,
+  }
+}
+
+export function getDocumentCompletionSummary(caseFile) {
+  const profileType = getClientProfileType(caseFile)
+  const requiredDefinitions = getRequiredDocumentDefinitions(caseFile)
+  const byCategory = getDocumentsByNormalizedCategory(caseFile)
+  const requiredLabelSet = new Set(requiredDefinitions.map((definition) => definition.label))
+  const documents = Array.isArray(caseFile?.documents) ? caseFile.documents : []
+
+  const requiredDocuments = requiredDefinitions.map((definition) => {
+    const linkedDocs = byCategory.get(definition.label) || []
+    const hasUpload = linkedDocs.length > 0
+    const hasInvalid = linkedDocs.some((doc) => String(doc?.validationStatus || '').toLowerCase() === 'invalid')
+    const hasUnextractable = hasUpload && linkedDocs.every((doc) => String(doc?.extractedText || '').trim().length === 0)
+    const state = !hasUpload ? 'missing' : (hasInvalid || hasUnextractable) ? 'needs_review' : 'uploaded'
+
+    return {
+      ...definition,
+      required: true,
+      documents: linkedDocs,
+      status: state,
+      isSatisfied: state === 'uploaded',
+      missingReason: definition.reason,
+    }
+  })
+
+  const extraDocuments = documents
+    .filter((doc) => !requiredLabelSet.has(normalizeCategory(doc.category)))
+    .map((doc) => ({
+      ...doc,
+      normalizedCategory: normalizeCategory(doc.category),
+      status: 'extra',
+    }))
+
+  const groupedRequiredDocuments = requiredDocuments.reduce((acc, item) => {
+    if (!acc[item.category]) acc[item.category] = []
+    acc[item.category].push(item)
+    return acc
+  }, {})
+
+  const entries = Object.entries(groupedRequiredDocuments).map(([category, items]) => {
+    const missingCount = items.filter((item) => item.status === 'missing').length
+    const reviewCount = items.filter((item) => item.status === 'needs_review').length
+    const uploadedCount = items.filter((item) => item.status === 'uploaded').length
+    const state = missingCount > 0 ? 'missing' : reviewCount > 0 ? 'partial' : 'complete'
+    return createChecklistEntry({
+      id: category.toLowerCase().replace(/[^a-z0-9]+/g, '-'),
+      label: category,
+      required: true,
+      state,
+      isSatisfied: missingCount === 0 && reviewCount === 0,
+      missingItems: items.filter((item) => item.status !== 'uploaded').map((item) => item.label),
+      details: `${uploadedCount}/${items.length} uploaded`,
+      critical: missingCount > 0,
+    })
+  })
+
+  const requiredEntries = entries
+  const missingEntries = requiredEntries.filter((entry) => !entry.isSatisfied)
+  const partialEntries = requiredEntries.filter((entry) => entry.state === 'partial')
+  const missingRequiredDocuments = requiredDocuments.filter((item) => item.status === 'missing')
+  const needsReviewDocuments = requiredDocuments.filter((item) => item.status === 'needs_review')
+  const uploadedRequiredDocuments = requiredDocuments.filter((item) => item.status !== 'missing')
+  const invalidRequiredDocuments = requiredDocuments.filter((item) => item.status === 'needs_review')
+
+  return {
+    profileType,
+    entries,
+    requiredEntries,
+    requiredDocuments,
+    groupedRequiredDocuments,
+    missingEntries,
+    partialEntries,
+    missingRequiredDocuments,
+    needsReviewDocuments,
+    uploadedRequiredDocuments,
+    invalidRequiredDocuments,
+    extraDocuments,
+    requiredTotal: requiredDocuments.length,
+    requiredCompletedCount: requiredDocuments.filter((item) => item.status === 'uploaded').length,
+    uploadedRequiredCount: uploadedRequiredDocuments.length,
+    missingRequiredCount: missingRequiredDocuments.length,
+    needsReviewCount: needsReviewDocuments.length,
+    missingCategoryLabels: missingEntries.map((entry) => entry.label),
+    allRequiredComplete: missingRequiredDocuments.length === 0 && needsReviewDocuments.length === 0,
+    hasCriticalMissing: missingRequiredDocuments.length > 0,
+  }
+}
+
+function hasCriticalIssues(caseFile) {
+  const explicitRiskFlags = Array.isArray(caseFile?.riskFlags) ? caseFile.riskFlags : []
+  const aiRiskFlags = Array.isArray(caseFile?.aiAnalysis?.riskFlags)
+    ? caseFile.aiAnalysis.riskFlags
+    : Array.isArray(caseFile?.aiAnalysis?.risks)
+      ? caseFile.aiAnalysis.risks
+      : []
+
+  return [...explicitRiskFlags, ...aiRiskFlags].some((risk) => {
+    const severity = String(risk?.severity || '').toLowerCase()
+    return severity === 'high' || severity === 'critical'
+  })
+}
+
+function formatAnalysisText(value) {
+  if (value === null || value === undefined || value === '') return ''
+  if (typeof value === 'string') return value
+  if (typeof value === 'number' || typeof value === 'boolean') return String(value)
+  if (Array.isArray(value)) return value.map(formatAnalysisText).filter(Boolean).join(' ')
+  if (typeof value === 'object') {
+    return [
+      value.priority,
+      value.severity,
+      value.action,
+      value.recommendation,
+      value.nextAction,
+      value.description,
+      value.issue,
+      value.reason,
+      value.title,
+      value.document,
+      value.rationale,
+    ].map(formatAnalysisText).filter(Boolean).join(' ')
+  }
+  return ''
+}
+
+function getAiActionPriority(value) {
+  const text = formatAnalysisText(value).toLowerCase()
+
+  if (/\b(low[- ]risk status|record .*low[- ]risk|retain .*regular review|regular review due to high net worth|periodic|annual monitoring|ongoing consistency|document .*findings|retain .*supporting evidence)\b/.test(text)) {
+    return 'Medium'
+  }
+
+  if (/\b(sanctions? hit|pep match|positive match|adverse media|fraud|source of wealth cannot be verified|unverified source of wealth|escalat|critical|blocker)\b/.test(text)
+    || /\b(high|must|mandatory|required|missing)\b/.test(text) && !/\bhigh net worth\b/.test(text)) {
+    return 'High'
+  }
+
+  if (/\b(request|obtain|collect|provide|upload|verify|validate|confirm|document|statement|report|grant|vesting|dividend|net.?worth|source.?of.?funds|evidence)\b/.test(text)) {
+    return 'Medium'
+  }
+  return 'Low'
+}
+
+function getHighPriorityAiFollowUps(caseFile) {
+  const analysis = caseFile?.aiAnalysis || {}
+  const suggestedActions = Array.isArray(analysis.suggestedActions)
+    ? analysis.suggestedActions
+    : Array.isArray(analysis.recommendations)
+      ? analysis.recommendations
+      : []
+  const missingEvidence = Array.isArray(analysis.missingOrInsufficientDocuments)
+    ? analysis.missingOrInsufficientDocuments
+    : []
+
+  return [...suggestedActions, ...missingEvidence].filter((item) => getAiActionPriority(item) === 'High')
+}
+
+export function hasCompletedAiAnalysis(caseFile) {
+  const analysis = caseFile?.aiAnalysis
+  if (!analysis || typeof analysis !== 'object') return false
+  if (analysis.updatedAt) return true
+
+  const hasStructuredSignals = Array.isArray(analysis.mismatches)
+    || Array.isArray(analysis.riskFlags)
+    || Array.isArray(analysis.risks)
+    || Boolean(analysis.sourceOfWealthDraft)
+
+  return hasStructuredSignals
+}
+
+export function hasFreshAiAnalysis(caseFile) {
+  if (!hasCompletedAiAnalysis(caseFile)) return false
+
+  const analysisUpdatedAt = Date.parse(caseFile?.aiAnalysis?.updatedAt || '')
+  if (Number.isNaN(analysisUpdatedAt)) return false
+
+  const latestDocumentUploadAt = (caseFile?.documents || []).reduce((latest, doc) => {
+    const parsed = Date.parse(doc?.uploadedAt || '')
+    if (Number.isNaN(parsed)) return latest
+    return Math.max(latest, parsed)
+  }, 0)
+
+  return analysisUpdatedAt >= latestDocumentUploadAt
+}
+
+export function calculateReadinessScore(caseFile) {
+  const normalized = normalizeCaseFile(caseFile)
+  const completionSummary = getDocumentCompletionSummary(normalized)
+  const profileComplete = hasRequiredFields(normalized)
+  const highPriorityFollowUps = getHighPriorityAiFollowUps(normalized)
+  const riskCleared = hasFreshAiAnalysis(normalized)
+    && !hasCriticalIssues(normalized)
+    && highPriorityFollowUps.length === 0
+
+  const totalItems = 1 + completionSummary.requiredTotal + 1
+  const completedItems = (profileComplete ? 1 : 0)
+    + completionSummary.requiredCompletedCount
+    + (riskCleared ? 1 : 0)
+  const percentage = totalItems === 0 ? 0 : Math.round((completedItems / totalItems) * 100)
+
+  return {
+    percentage,
+    completedItems,
+    totalItems,
+    profile: {
+      complete: profileComplete,
+      status: profileComplete ? 'Complete' : 'Incomplete',
+    },
+    documents: {
+      completed: completionSummary.requiredCompletedCount,
+      total: completionSummary.requiredTotal,
+      complete: completionSummary.allRequiredComplete,
+      missing: completionSummary.missingRequiredDocuments.map((item) => item.label),
+      needsReview: completionSummary.needsReviewDocuments.map((item) => item.label),
+    },
+    risk: {
+      cleared: riskCleared,
+      status: riskCleared ? 'Cleared' : 'Pending',
+      aiAnalysisCompleted: hasFreshAiAnalysis(normalized),
+      hasHighOrCriticalRisk: hasCriticalIssues(normalized),
+      highPriorityFollowUps: highPriorityFollowUps.length,
+    },
+  }
+}
+
+export async function getReadinessScore(caseId) {
+  const caseFile = await getCaseFileById(caseId)
+  if (!caseFile) {
+    return null
+  }
+
+  return calculateReadinessScore(caseFile)
+}
+
+function derivePreReviewStatus(caseFile) {
+  if (hasNoDocuments(caseFile)) {
+    return CASE_STATUS.DRAFT
+  }
+
+  if (!hasRequiredDocuments(caseFile)) {
+    return CASE_STATUS.MISSING_DOCUMENTS
+  }
+
+  if (!hasRequiredFields(caseFile)) {
+    return CASE_STATUS.DRAFT
+  }
+
+  if (hasCriticalIssues(caseFile)) {
+    return CASE_STATUS.DRAFT
+  }
+
+  return CASE_STATUS.PENDING_REVIEW
+}
+
+function canTransitionStatus(previousStatus, nextStatus) {
+  if (previousStatus === nextStatus) return true
+  if (!ALLOWED_CASE_STATUSES.has(previousStatus) || !ALLOWED_CASE_STATUSES.has(nextStatus)) return false
+
+  const allowed = {
+    [CASE_STATUS.DRAFT]: new Set([CASE_STATUS.MISSING_DOCUMENTS, CASE_STATUS.PENDING_REVIEW]),
+    [CASE_STATUS.MISSING_DOCUMENTS]: new Set([CASE_STATUS.DRAFT, CASE_STATUS.PENDING_REVIEW]),
+    [CASE_STATUS.PENDING_REVIEW]: new Set([CASE_STATUS.DRAFT, CASE_STATUS.MISSING_DOCUMENTS, CASE_STATUS.UNDER_REVIEW, CASE_STATUS.ACTION_REQUIRED]),
+    [CASE_STATUS.UNDER_REVIEW]: new Set([CASE_STATUS.APPROVED, CASE_STATUS.ACTION_REQUIRED, CASE_STATUS.REJECTED, CASE_STATUS.ESCALATED, CASE_STATUS.DRAFT, CASE_STATUS.MISSING_DOCUMENTS]),
+    [CASE_STATUS.APPROVED]: new Set([]),
+    [CASE_STATUS.ACTION_REQUIRED]: new Set([CASE_STATUS.DRAFT, CASE_STATUS.MISSING_DOCUMENTS, CASE_STATUS.PENDING_REVIEW]),
+    [CASE_STATUS.REJECTED]: new Set([]),
+    [CASE_STATUS.ESCALATED]: new Set([CASE_STATUS.UNDER_REVIEW, CASE_STATUS.ACTION_REQUIRED, CASE_STATUS.REJECTED]),
+  }
+
+  return allowed[previousStatus]?.has(nextStatus) || false
+}
+
+function appendStatusHistoryEntries(caseFile, nextStatus, actor = 'System', reason = 'Status recalculated') {
+  const normalized = normalizeCaseFile(caseFile)
+  const previousStatus = normalized?.status || CASE_STATUS.DRAFT
+  const next = ALLOWED_CASE_STATUSES.has(nextStatus) ? nextStatus : previousStatus
+
+  if (previousStatus === next) {
+    return { status: previousStatus, statusHistory: normalized?.statusHistory || [] }
+  }
+
+  if (!canTransitionStatus(previousStatus, next)) {
+    return { status: previousStatus, statusHistory: normalized?.statusHistory || [] }
+  }
+
+  const entry = {
+    timestamp: new Date().toISOString(),
+    actor,
+    from: previousStatus,
+    to: next,
+    reason,
+  }
+
+  return {
+    status: next,
+    statusHistory: [...(normalized?.statusHistory || []), entry],
+  }
+}
+
+function applySystemDerivedStatus(caseFile, reason) {
+  const normalized = normalizeCaseFile(caseFile)
+  if (!normalized) return normalized
+
+  if (!SYSTEM_EDITABLE_STATUSES.has(normalized.status)) {
+    return normalized
+  }
+
+  const targetStatus = derivePreReviewStatus(normalized)
+  const transition = appendStatusHistoryEntries(normalized, targetStatus, 'System', reason)
+
+  return {
+    ...normalized,
+    status: transition.status,
+    statusHistory: transition.statusHistory,
+  }
+}
+
+function withStatusTransition(caseFile, targetStatus, actor, reason) {
+  const normalized = normalizeCaseFile(caseFile)
+  if (!normalized) return normalized
+
+  const transition = appendStatusHistoryEntries(normalized, targetStatus, actor, reason)
+  return {
+    ...normalized,
+    status: transition.status,
+    statusHistory: transition.statusHistory,
   }
 }
 
@@ -123,10 +602,17 @@ function createLocalDraftCase(formData) {
     occupation: formData.occupation || '',
     netWorth: formData.netWorth || '',
     purpose: formData.purpose || '',
-    status: 'Draft',
+    status: CASE_STATUS.DRAFT,
     createdAt: now,
     updatedAt: now,
     submittedAt: null,
+    statusHistory: [{
+      timestamp: now,
+      actor: 'System',
+      from: null,
+      to: CASE_STATUS.DRAFT,
+      reason: 'Case created',
+    }],
     documents: [],
   }
 
@@ -204,6 +690,7 @@ export function clearActiveCaseId() {
 export async function createDraftCase(formData) {
   return withStorageFallback(
     async () => {
+      const now = new Date().toISOString()
       const payload = {
         clientName: formData.clientName || 'Unnamed Client',
         nationality: formData.nationality || '',
@@ -211,7 +698,14 @@ export async function createDraftCase(formData) {
         occupation: formData.occupation || '',
         netWorth: formData.netWorth || '',
         purpose: formData.purpose || '',
-        status: 'Draft',
+        status: CASE_STATUS.DRAFT,
+        statusHistory: [{
+          timestamp: now,
+          actor: 'System',
+          from: null,
+          to: CASE_STATUS.DRAFT,
+          reason: 'Case created',
+        }],
         submittedAt: null,
         documents: [],
       }
@@ -233,13 +727,27 @@ export async function updateCaseCore(caseId, formData) {
       const existing = await getFirebaseCaseFile(caseId)
       if (!existing) return null
 
-      await updateFirebaseCaseFile(caseId, {
+      const merged = normalizeCaseFile({
+        ...existing,
         clientName: formData.clientName || existing.clientName,
         nationality: formData.nationality || existing.nationality,
         residence: formData.residence || existing.residence,
         occupation: formData.occupation || existing.occupation,
         netWorth: formData.netWorth || existing.netWorth,
         purpose: formData.purpose || existing.purpose,
+      })
+
+      const withDerivedStatus = applySystemDerivedStatus(merged, 'Profile updated')
+
+      await updateFirebaseCaseFile(caseId, {
+        clientName: withDerivedStatus.clientName,
+        nationality: withDerivedStatus.nationality,
+        residence: withDerivedStatus.residence,
+        occupation: withDerivedStatus.occupation,
+        netWorth: withDerivedStatus.netWorth,
+        purpose: withDerivedStatus.purpose,
+        status: withDerivedStatus.status,
+        statusHistory: withDerivedStatus.statusHistory,
       })
 
       const updated = normalizeCaseFile(await getFirebaseCaseFile(caseId))
@@ -252,7 +760,7 @@ export async function updateCaseCore(caseId, formData) {
       const existing = getLocalCaseFileById(caseId)
       if (!existing) return null
 
-      const nextCase = {
+      const merged = {
         ...existing,
         clientName: formData.clientName || existing.clientName,
         nationality: formData.nationality || existing.nationality,
@@ -263,7 +771,7 @@ export async function updateCaseCore(caseId, formData) {
         updatedAt: new Date().toISOString(),
       }
 
-      return upsertLocalCaseFile(nextCase)
+      return upsertLocalCaseFile(applySystemDerivedStatus(merged, 'Profile updated'))
     },
   )
 }
@@ -274,7 +782,29 @@ export async function updateCaseData(caseId, payload) {
       const existing = await getFirebaseCaseFile(caseId)
       if (!existing) return null
 
-      await updateFirebaseCaseFile(caseId, payload)
+      const base = normalizeCaseFile(existing)
+      let merged = normalizeCaseFile({
+        ...base,
+        ...payload,
+      })
+
+      if (payload?.status && ALLOWED_CASE_STATUSES.has(payload.status)) {
+        const transitionCase = withStatusTransition(
+          base,
+          payload.status,
+          'System',
+          'Manual status update',
+        )
+        merged = normalizeCaseFile({
+          ...merged,
+          status: transitionCase.status,
+          statusHistory: transitionCase.statusHistory,
+        })
+      } else {
+        merged = applySystemDerivedStatus(merged, 'Case data updated')
+      }
+
+      await updateFirebaseCaseFile(caseId, merged)
 
       const updated = normalizeCaseFile(await getFirebaseCaseFile(caseId))
       if (updated) {
@@ -286,10 +816,27 @@ export async function updateCaseData(caseId, payload) {
       const existing = getLocalCaseFileById(caseId)
       if (!existing) return null
 
-      const nextCase = {
-        ...existing,
+      const base = normalizeCaseFile(existing)
+      let nextCase = {
+        ...base,
         ...payload,
         updatedAt: new Date().toISOString(),
+      }
+
+      if (payload?.status && ALLOWED_CASE_STATUSES.has(payload.status)) {
+        const transitionCase = withStatusTransition(
+          base,
+          payload.status,
+          'System',
+          'Manual status update',
+        )
+        nextCase = {
+          ...nextCase,
+          status: transitionCase.status,
+          statusHistory: transitionCase.statusHistory,
+        }
+      } else {
+        nextCase = applySystemDerivedStatus(nextCase, 'Case data updated')
       }
 
       return upsertLocalCaseFile(nextCase)
@@ -315,16 +862,18 @@ export async function addDocumentToCase(caseId, documentMeta) {
       const existing = await getFirebaseCaseFile(caseId)
       if (!existing) return null
 
-      const nextCase = normalizeCaseFile({
+      const merged = normalizeCaseFile({
         ...existing,
         documents: [...(existing.documents || []), documentMeta],
+        submittedAt: null,
       })
 
-      const requiredReady = hasRequiredDocuments(nextCase)
+      const nextCase = applySystemDerivedStatus(merged, 'Document added')
 
       await updateFirebaseCaseFile(caseId, {
         documents: nextCase.documents,
-        status: requiredReady ? 'In Review' : 'Missing Documents',
+        status: nextCase.status,
+        statusHistory: nextCase.statusHistory,
         submittedAt: null,
       })
 
@@ -338,15 +887,14 @@ export async function addDocumentToCase(caseId, documentMeta) {
       const existing = getLocalCaseFileById(caseId)
       if (!existing) return null
 
-      const nextCase = {
+      const merged = {
         ...existing,
         documents: [...(existing.documents || []), documentMeta],
         submittedAt: null,
+        updatedAt: new Date().toISOString(),
       }
 
-      const requiredReady = hasRequiredDocuments(nextCase)
-      nextCase.status = requiredReady ? 'In Review' : 'Missing Documents'
-      nextCase.updatedAt = new Date().toISOString()
+      const nextCase = applySystemDerivedStatus(merged, 'Document added')
 
       return upsertLocalCaseFile(nextCase)
     },
@@ -361,19 +909,18 @@ export async function removeDocumentFromCase(caseId, documentId) {
 
       const removedDocument = (existing.documents || []).find((doc) => doc.id === documentId) || null
       const nextDocuments = (existing.documents || []).filter((doc) => doc.id !== documentId)
-      const nextCase = normalizeCaseFile({
+      const mergedCase = normalizeCaseFile({
         ...existing,
         documents: nextDocuments,
+        submittedAt: null,
       })
 
-      let nextStatus = 'Draft'
-      if (nextDocuments.length > 0) {
-        nextStatus = hasRequiredDocuments(nextCase) ? 'In Review' : 'Missing Documents'
-      }
+      const nextCase = applySystemDerivedStatus(mergedCase, 'Document removed')
 
       await updateFirebaseCaseFile(caseId, {
         documents: nextDocuments,
-        status: nextStatus,
+        status: nextCase.status,
+        statusHistory: nextCase.statusHistory,
         submittedAt: null,
       })
 
@@ -395,21 +942,14 @@ export async function removeDocumentFromCase(caseId, documentId) {
       const existing = getLocalCaseFileById(caseId)
       if (!existing) return null
 
-      const nextDocuments = (existing.documents || []).filter((doc) => doc.id !== documentId)
       const nextCase = {
         ...existing,
-        documents: nextDocuments,
+        documents: (existing.documents || []).filter((doc) => doc.id !== documentId),
         submittedAt: null,
         updatedAt: new Date().toISOString(),
       }
 
-      if (nextDocuments.length === 0) {
-        nextCase.status = 'Draft'
-      } else {
-        nextCase.status = hasRequiredDocuments(nextCase) ? 'In Review' : 'Missing Documents'
-      }
-
-      return upsertLocalCaseFile(nextCase)
+      return upsertLocalCaseFile(applySystemDerivedStatus(nextCase, 'Document removed'))
     },
   )
 }
@@ -421,8 +961,7 @@ export function hasRequiredFields(caseFile) {
 }
 
 export function hasRequiredDocuments(caseFile) {
-  const categoriesPresent = new Set((caseFile?.documents || []).map((doc) => normalizeCategory(doc.category)))
-  return REQUIRED_DOCUMENT_CATEGORIES.every((category) => categoriesPresent.has(category))
+  return getDocumentCompletionSummary(caseFile).allRequiredComplete
 }
 
 export async function markReadyForReview(caseId) {
@@ -441,8 +980,24 @@ export async function markReadyForReview(caseId) {
         return { ok: false, reason: 'Required documents are incomplete' }
       }
 
+      if (hasCriticalIssues(existing)) {
+        return { ok: false, reason: 'Critical risk flags must be resolved before marking ready for review' }
+      }
+
+      const nextCase = withStatusTransition(
+        existing,
+        CASE_STATUS.PENDING_REVIEW,
+        'RM',
+        'Submitted to Compliance queue',
+      )
+
+      if (nextCase.status !== CASE_STATUS.PENDING_REVIEW) {
+        return { ok: false, reason: `Invalid status transition from ${existing.status} to Pending Review` }
+      }
+
       await updateFirebaseCaseFile(caseId, {
-        status: 'Ready for Review',
+        status: CASE_STATUS.PENDING_REVIEW,
+        statusHistory: nextCase.statusHistory,
         submittedAt: new Date().toISOString(),
       })
 
@@ -467,9 +1022,25 @@ export async function markReadyForReview(caseId) {
         return { ok: false, reason: 'Required documents are incomplete' }
       }
 
+      if (hasCriticalIssues(existing)) {
+        return { ok: false, reason: 'Critical risk flags must be resolved before marking ready for review' }
+      }
+
+      const nextCase = withStatusTransition(
+        existing,
+        CASE_STATUS.PENDING_REVIEW,
+        'RM',
+        'Submitted to Compliance queue',
+      )
+
+      if (nextCase.status !== CASE_STATUS.PENDING_REVIEW) {
+        return { ok: false, reason: `Invalid status transition from ${existing.status} to Pending Review` }
+      }
+
       const updated = upsertLocalCaseFile({
         ...existing,
-        status: 'Ready for Review',
+        status: CASE_STATUS.PENDING_REVIEW,
+        statusHistory: nextCase.statusHistory,
         submittedAt: new Date().toISOString(),
         updatedAt: new Date().toISOString(),
       })
@@ -495,9 +1066,38 @@ export async function submitCaseForCompliance(caseId, payload = {}) {
         return { ok: false, reason: 'Required documents are incomplete' }
       }
 
+      if (existing.status === CASE_STATUS.ESCALATED) {
+        return { ok: false, reason: 'Escalated cases must be resolved by Compliance before resubmission.' }
+      }
+
+      const merged = normalizeCaseFile({
+        ...existing,
+        ...payload,
+      })
+
+      if (!hasFreshAiAnalysis(merged)) {
+        return { ok: false, reason: 'Run AI analysis after the latest document upload before compliance submission.' }
+      }
+
+      if (hasCriticalIssues(merged)) {
+        return { ok: false, reason: 'Critical risk flags detected. Resolve or escalate before compliance submission.' }
+      }
+
+      const nextCase = withStatusTransition(
+        merged,
+        CASE_STATUS.PENDING_REVIEW,
+        'RM',
+        'Submitted to Compliance queue',
+      )
+
+      if (nextCase.status !== CASE_STATUS.PENDING_REVIEW) {
+        return { ok: false, reason: `Invalid status transition from ${existing.status} to Pending Review` }
+      }
+
       await updateFirebaseCaseFile(caseId, {
         ...payload,
-        status: 'In Review',
+        status: CASE_STATUS.PENDING_REVIEW,
+        statusHistory: nextCase.statusHistory,
         submittedAt: new Date().toISOString(),
       })
 
@@ -522,10 +1122,37 @@ export async function submitCaseForCompliance(caseId, payload = {}) {
         return { ok: false, reason: 'Required documents are incomplete' }
       }
 
-      const updated = upsertLocalCaseFile({
+      if (existing.status === CASE_STATUS.ESCALATED) {
+        return { ok: false, reason: 'Escalated cases must be resolved by Compliance before resubmission.' }
+      }
+
+      const merged = {
         ...existing,
         ...payload,
-        status: 'In Review',
+      }
+
+      if (!hasFreshAiAnalysis(merged)) {
+        return { ok: false, reason: 'Run AI analysis after the latest document upload before compliance submission.' }
+      }
+
+      if (hasCriticalIssues(merged)) {
+        return { ok: false, reason: 'Critical risk flags detected. Resolve or escalate before compliance submission.' }
+      }
+
+      const nextCase = withStatusTransition(
+        merged,
+        CASE_STATUS.PENDING_REVIEW,
+        'RM',
+        'Submitted to Compliance queue',
+      )
+
+      if (nextCase.status !== CASE_STATUS.PENDING_REVIEW) {
+        return { ok: false, reason: `Invalid status transition from ${existing.status} to Pending Review` }
+      }
+
+      const updated = upsertLocalCaseFile({
+        ...nextCase,
+        status: CASE_STATUS.PENDING_REVIEW,
         submittedAt: new Date().toISOString(),
         updatedAt: new Date().toISOString(),
       })
@@ -536,7 +1163,276 @@ export async function submitCaseForCompliance(caseId, payload = {}) {
 }
 
 export function getRequiredDocumentCategories() {
-  return REQUIRED_DOCUMENT_CATEGORIES
+  return Array.from(new Set(DOCUMENT_DEFINITIONS.map((item) => item.category)))
+}
+
+export function getRequiredDocumentCategoriesForCase(caseFile) {
+  return getDocumentCompletionSummary(caseFile).requiredDocuments.map((item) => item.label)
+}
+
+export function getDocumentTypeOptions(caseFile = null) {
+  if (!caseFile) {
+    return DOCUMENT_DEFINITIONS.map((item) => item.label)
+  }
+  return getRequiredDocumentDefinitions(caseFile).map((item) => item.label)
+}
+
+export function getDocumentTypeGroups(caseFile = null) {
+  const source = caseFile ? getRequiredDocumentDefinitions(caseFile) : DOCUMENT_DEFINITIONS
+  const grouped = source.reduce((acc, item) => {
+    if (!acc[item.category]) acc[item.category] = []
+    acc[item.category].push(item.label)
+    return acc
+  }, {})
+
+  return Object.entries(grouped).map(([label, options]) => ({ label, options }))
+}
+
+export async function approveCaseByCompliance(caseId) {
+  return withStorageFallback(
+    async () => {
+      const existing = normalizeCaseFile(await getFirebaseCaseFile(caseId))
+      if (!existing) return { ok: false, reason: 'Case not found' }
+
+      const nextCase = withStatusTransition(existing, CASE_STATUS.APPROVED, 'Compliance', 'Compliance approved case')
+      if (nextCase.status !== CASE_STATUS.APPROVED) {
+        return { ok: false, reason: `Invalid status transition from ${existing.status} to Approved` }
+      }
+
+      await updateFirebaseCaseFile(caseId, {
+        status: CASE_STATUS.APPROVED,
+        statusHistory: nextCase.statusHistory,
+      })
+
+      const updated = normalizeCaseFile(await getFirebaseCaseFile(caseId))
+      if (updated) upsertLocalCaseFile(updated)
+      return { ok: true, caseFile: updated }
+    },
+    async () => {
+      const existing = getLocalCaseFileById(caseId)
+      if (!existing) return { ok: false, reason: 'Case not found' }
+
+      const nextCase = withStatusTransition(existing, CASE_STATUS.APPROVED, 'Compliance', 'Compliance approved case')
+      if (nextCase.status !== CASE_STATUS.APPROVED) {
+        return { ok: false, reason: `Invalid status transition from ${existing.status} to Approved` }
+      }
+
+      const updated = upsertLocalCaseFile({
+        ...nextCase,
+        updatedAt: new Date().toISOString(),
+      })
+
+      return { ok: true, caseFile: updated }
+    },
+  )
+}
+
+export async function escalateCaseByCompliance(caseId) {
+  return withStorageFallback(
+    async () => {
+      const existing = normalizeCaseFile(await getFirebaseCaseFile(caseId))
+      if (!existing) return { ok: false, reason: 'Case not found' }
+
+      const nextCase = withStatusTransition(existing, CASE_STATUS.ESCALATED, 'Compliance', 'Compliance escalated case')
+      if (nextCase.status !== CASE_STATUS.ESCALATED) {
+        return { ok: false, reason: `Invalid status transition from ${existing.status} to Escalated` }
+      }
+
+      await updateFirebaseCaseFile(caseId, {
+        status: CASE_STATUS.ESCALATED,
+        statusHistory: nextCase.statusHistory,
+      })
+
+      const updated = normalizeCaseFile(await getFirebaseCaseFile(caseId))
+      if (updated) upsertLocalCaseFile(updated)
+      return { ok: true, caseFile: updated }
+    },
+    async () => {
+      const existing = getLocalCaseFileById(caseId)
+      if (!existing) return { ok: false, reason: 'Case not found' }
+
+      const nextCase = withStatusTransition(existing, CASE_STATUS.ESCALATED, 'Compliance', 'Compliance escalated case')
+      if (nextCase.status !== CASE_STATUS.ESCALATED) {
+        return { ok: false, reason: `Invalid status transition from ${existing.status} to Escalated` }
+      }
+
+      const updated = upsertLocalCaseFile({
+        ...nextCase,
+        updatedAt: new Date().toISOString(),
+      })
+
+      return { ok: true, caseFile: updated }
+    },
+  )
+}
+
+export async function requestMoreInfoFromCompliance(caseId) {
+  return withStorageFallback(
+    async () => {
+      const existing = normalizeCaseFile(await getFirebaseCaseFile(caseId))
+      if (!existing) return { ok: false, reason: 'Case not found' }
+
+      const targetStatus = derivePreReviewStatus(existing)
+      const nextCase = withStatusTransition(existing, targetStatus, 'Compliance', 'Compliance requested more information')
+      if (nextCase.status !== targetStatus) {
+        return { ok: false, reason: `Invalid status transition from ${existing.status} to ${targetStatus}` }
+      }
+
+      await updateFirebaseCaseFile(caseId, {
+        status: targetStatus,
+        statusHistory: nextCase.statusHistory,
+      })
+
+      const updated = normalizeCaseFile(await getFirebaseCaseFile(caseId))
+      if (updated) upsertLocalCaseFile(updated)
+      return { ok: true, caseFile: updated }
+    },
+    async () => {
+      const existing = getLocalCaseFileById(caseId)
+      if (!existing) return { ok: false, reason: 'Case not found' }
+
+      const targetStatus = derivePreReviewStatus(existing)
+      const nextCase = withStatusTransition(existing, targetStatus, 'Compliance', 'Compliance requested more information')
+      if (nextCase.status !== targetStatus) {
+        return { ok: false, reason: `Invalid status transition from ${existing.status} to ${targetStatus}` }
+      }
+
+      const updated = upsertLocalCaseFile({
+        ...nextCase,
+        updatedAt: new Date().toISOString(),
+      })
+
+      return { ok: true, caseFile: updated }
+    },
+  )
+}
+
+export async function addComplianceComment(caseId, comment) {
+  const trimmed = String(comment?.text || '').trim()
+  if (!trimmed) return { ok: false, reason: 'Comment cannot be empty' }
+
+  const entry = {
+    id: `comment-${Date.now()}`,
+    author: comment.author || 'Compliance Officer',
+    audience: comment.audience || 'Internal',
+    text: trimmed,
+    createdAt: new Date().toISOString(),
+  }
+
+  return withStorageFallback(
+    async () => {
+      const existing = normalizeCaseFile(await getFirebaseCaseFile(caseId))
+      if (!existing) return { ok: false, reason: 'Case not found' }
+
+      const comments = [...(existing.comments || []), entry]
+      await updateFirebaseCaseFile(caseId, {
+        comments,
+        updatedAt: new Date().toISOString(),
+      })
+
+      const updated = normalizeCaseFile(await getFirebaseCaseFile(caseId))
+      if (updated) upsertLocalCaseFile(updated)
+      return { ok: true, caseFile: updated, comment: entry }
+    },
+    async () => {
+      const existing = getLocalCaseFileById(caseId)
+      if (!existing) return { ok: false, reason: 'Case not found' }
+
+      const updated = upsertLocalCaseFile({
+        ...existing,
+        comments: [...(existing.comments || []), entry],
+        updatedAt: new Date().toISOString(),
+      })
+
+      return { ok: true, caseFile: updated, comment: entry }
+    },
+  )
+}
+
+export async function submitComplianceDecision(caseId, decision, payload = {}) {
+  const normalizedDecision = String(decision || '').toLowerCase()
+  const decisionConfig = {
+    approve: {
+      status: CASE_STATUS.APPROVED,
+      reason: 'Compliance approved case',
+      note: payload.note || 'Compliance approved the case for Operations processing.',
+    },
+    request_info: {
+      status: CASE_STATUS.ACTION_REQUIRED,
+      reason: 'Compliance requested more information',
+      note: payload.note || 'Compliance requested additional information from RM.',
+    },
+    reject: {
+      status: CASE_STATUS.REJECTED,
+      reason: 'Compliance rejected case',
+      note: payload.note || 'Compliance rejected the case.',
+    },
+  }[normalizedDecision]
+
+  if (!decisionConfig) return { ok: false, reason: 'Unknown compliance decision' }
+
+  const makeDecisionComment = () => ({
+    id: `decision-${Date.now()}`,
+    author: 'Compliance Officer',
+    audience: normalizedDecision === 'request_info' ? 'RM Feedback' : 'Internal',
+    text: decisionConfig.note,
+    decision: normalizedDecision,
+    createdAt: new Date().toISOString(),
+  })
+
+  return withStorageFallback(
+    async () => {
+      const existing = normalizeCaseFile(await getFirebaseCaseFile(caseId))
+      if (!existing) return { ok: false, reason: 'Case not found' }
+
+      const nextCase = withStatusTransition(existing, decisionConfig.status, 'Compliance', decisionConfig.reason)
+      if (nextCase.status !== decisionConfig.status) {
+        return { ok: false, reason: `Invalid status transition from ${existing.status} to ${decisionConfig.status}` }
+      }
+
+      const decisionEntry = makeDecisionComment()
+      await updateFirebaseCaseFile(caseId, {
+        status: decisionConfig.status,
+        statusHistory: nextCase.statusHistory,
+        comments: [...(existing.comments || []), decisionEntry],
+        complianceDecision: {
+          decision: normalizedDecision,
+          decidedAt: decisionEntry.createdAt,
+          decidedBy: 'Compliance Officer',
+          note: decisionConfig.note,
+        },
+        updatedAt: new Date().toISOString(),
+      })
+
+      const updated = normalizeCaseFile(await getFirebaseCaseFile(caseId))
+      if (updated) upsertLocalCaseFile(updated)
+      return { ok: true, caseFile: updated }
+    },
+    async () => {
+      const existing = getLocalCaseFileById(caseId)
+      if (!existing) return { ok: false, reason: 'Case not found' }
+
+      const nextCase = withStatusTransition(existing, decisionConfig.status, 'Compliance', decisionConfig.reason)
+      if (nextCase.status !== decisionConfig.status) {
+        return { ok: false, reason: `Invalid status transition from ${existing.status} to ${decisionConfig.status}` }
+      }
+
+      const decisionEntry = makeDecisionComment()
+      const updated = upsertLocalCaseFile({
+        ...nextCase,
+        comments: [...(existing.comments || []), decisionEntry],
+        complianceDecision: {
+          decision: normalizedDecision,
+          decidedAt: decisionEntry.createdAt,
+          decidedBy: 'Compliance Officer',
+          note: decisionConfig.note,
+        },
+        updatedAt: new Date().toISOString(),
+      })
+
+      return { ok: true, caseFile: updated }
+    },
+  )
 }
 
 export function isFirebaseEnabled() {
