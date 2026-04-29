@@ -16,6 +16,7 @@ const defaultNavItems = [
 
 const rmNavItems = [
   { id: 'dashboard', label: 'Dashboard', icon: LayoutDashboard },
+  { id: 'cases', label: 'Case Files', icon: FolderKanban },
   { id: 'audit', label: 'System Audit Log', icon: ClipboardList },
 ]
 

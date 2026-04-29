@@ -847,6 +847,21 @@ export async function updateCaseData(caseId, payload) {
 export async function deleteCaseFile(caseId) {
   return withStorageFallback(
     async () => {
+      const existing = await getFirebaseCaseFile(caseId)
+      const storagePaths = Array.from(new Set(
+        (existing?.documents || [])
+          .map((document) => document?.storagePath)
+          .filter(Boolean),
+      ))
+
+      for (const storagePath of storagePaths) {
+        try {
+          await removeCaseDocumentFile(storagePath)
+        } catch (error) {
+          console.warn('Unable to remove case document from Firebase Storage:', storagePath, error)
+        }
+      }
+
       await removeFirebaseCaseFile(caseId)
       deleteLocalCaseFile(caseId)
     },
