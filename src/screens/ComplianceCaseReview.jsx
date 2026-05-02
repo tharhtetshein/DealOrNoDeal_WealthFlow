@@ -71,6 +71,8 @@ function getDocumentValidation(documentItem) {
 }
 
 function getRiskLevel(caseFile, readiness) {
+  const snapshot = caseFile?._lastRuleSnapshot || caseFile?.ruleSnapshots?.[caseFile.ruleSnapshots.length - 1]
+  if (snapshot?.computedMetrics?.finalRiskLevel) return snapshot.computedMetrics.finalRiskLevel
   const risks = caseFile?.aiAnalysis?.risks || []
   const high = risks.some((risk) => /high|critical/i.test(String(risk.severity || risk.priority || '')))
   const medium = risks.some((risk) => /medium/i.test(String(risk.severity || risk.priority || '')))
@@ -214,8 +216,23 @@ export default function ComplianceCaseReview({ onNavigate }) {
 
   const handleChecklistToggle = async (key, checked) => {
     if (!caseFile) return
+    const item = checklist?.items.find((entry) => entry.key === key)
+    const overrideReason = item?.ruleDriven && !checked
+      ? window.prompt('Reason for overriding this rule-driven checklist item?')
+      : ''
+    if (item?.ruleDriven && !checked && !String(overrideReason || '').trim()) {
+      setMessage('Rule-driven overrides require a reason.')
+      return
+    }
+    const overridePolicyReference = item?.ruleDriven && !checked
+      ? window.prompt('Policy reference for this override?')
+      : ''
+    if (item?.ruleDriven && !checked && !String(overridePolicyReference || '').trim()) {
+      setMessage('Rule-driven overrides require a policy reference.')
+      return
+    }
     const result = await updateComplianceChecklist(caseFile.id, {
-      [key]: { checked },
+      [key]: { checked, overrideReason, overridePolicyReference },
     })
     if (!result.ok) {
       setMessage(result.reason)
@@ -521,14 +538,24 @@ export default function ComplianceCaseReview({ onNavigate }) {
                       <div className="flex items-center justify-between">
                         <p className="font-semibold text-on-surface">{item.label}</p>
                         <span className="rounded-full bg-surface-container px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wider text-on-surface-variant">
-                          {item.category}
+                          {item.ruleDriven ? 'Rule-driven' : item.category}
                         </span>
                       </div>
+                      {item.ruleDriven ? (
+                        <p className="mt-1 text-xs text-on-surface-variant">
+                          {item.reason || 'Required by rule'} {item.policyReference ? `Policy: ${item.policyReference}` : ''}
+                        </p>
+                      ) : null}
                       {item.checked && item.checkedAt && (
                         <p className="mt-1 text-xs text-on-surface-variant">
                           Checked by {item.checkedBy} at {new Date(item.checkedAt).toLocaleString()}
                         </p>
                       )}
+                      {item.overrideReason ? (
+                        <p className="mt-1 text-xs text-warning">
+                          Override: {item.overrideReason} ({item.overridePolicyReference})
+                        </p>
+                      ) : null}
                     </div>
                     <input
                       type="checkbox"

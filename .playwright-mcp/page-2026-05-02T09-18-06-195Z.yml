@@ -1,0 +1,83 @@
+- generic [ref=e567]:
+  - complementary [ref=e568]:
+    - button "WEALTHFLOW Crimson Reserve" [ref=e569] [cursor=pointer]:
+      - generic [ref=e570]:
+        - img [ref=e572]
+        - generic [ref=e576]:
+          - heading "WEALTHFLOW" [level=1] [ref=e577]
+          - paragraph [ref=e578]: Crimson Reserve
+    - navigation [ref=e579]:
+      - button "Dashboard" [ref=e580] [cursor=pointer]:
+        - img [ref=e581]
+        - text: Dashboard
+      - button "Case Files" [ref=e586] [cursor=pointer]:
+        - img [ref=e587]
+        - text: Case Files
+      - button "Documents" [ref=e589] [cursor=pointer]:
+        - img [ref=e590]
+        - text: Documents
+      - button "System Audit Log" [ref=e593] [cursor=pointer]:
+        - img [ref=e594]
+        - text: System Audit Log
+      - button "Rule Admin" [ref=e597] [cursor=pointer]:
+        - img [ref=e598]
+        - text: Rule Admin
+    - button "Sign Out" [ref=e605] [cursor=pointer]:
+      - img [ref=e606]
+      - text: Sign Out
+  - generic [ref=e609]:
+    - banner [ref=e610]:
+      - generic [ref=e611]:
+        - heading "WealthFlow SoW" [level=1] [ref=e614]
+        - generic [ref=e615]:
+          - generic [ref=e616]:
+            - img [ref=e617]
+            - textbox "Search cases, clients..." [ref=e620]
+          - button [ref=e621] [cursor=pointer]:
+            - img [ref=e622]
+          - generic [ref=e628]: JS
+    - main [ref=e629]:
+      - generic [ref=e630]:
+        - generic [ref=e631]:
+          - generic [ref=e632]:
+            - heading "Case Files" [level=1] [ref=e633]
+            - paragraph [ref=e634]: Draft first, upload documents progressively, then submit when complete.
+          - button "New Case File" [ref=e635] [cursor=pointer]:
+            - img [ref=e636]
+            - text: New Case File
+        - table [ref=e638]:
+          - rowgroup [ref=e639]:
+            - row [ref=e640]:
+              - columnheader [ref=e641]:
+                - generic [ref=e642]:
+                  - img [ref=e643]
+                  - textbox "Search by client name" [ref=e646]
+            - row "Client Name Net Worth Documents Status Updated Actions" [ref=e647]:
+              - columnheader "Client Name" [ref=e648]
+              - columnheader "Net Worth" [ref=e649]
+              - columnheader "Documents" [ref=e650]
+              - columnheader "Status" [ref=e651]
+              - columnheader "Updated" [ref=e652]
+              - columnheader "Actions" [ref=e653]
+          - rowgroup [ref=e654]:
+            - row "Test Rule Client 8000000 0 file(s) Draft 5/2/2026 Edit Case Documents Submit Delete" [ref=e655]:
+              - cell "Test Rule Client" [ref=e656]
+              - cell "8000000" [ref=e657]
+              - cell "0 file(s)" [ref=e658]
+              - cell "Draft" [ref=e659]:
+                - generic [ref=e660]: Draft
+              - cell "5/2/2026" [ref=e661]
+              - cell "Edit Case Documents Submit Delete" [ref=e662]:
+                - generic [ref=e663]:
+                  - button "Edit Case" [ref=e664] [cursor=pointer]:
+                    - img [ref=e665]
+                    - text: Edit Case
+                  - button "Documents" [ref=e667] [cursor=pointer]:
+                    - img [ref=e668]
+                    - text: Documents
+                  - button "Submit" [ref=e670] [cursor=pointer]:
+                    - img [ref=e671]
+                    - text: Submit
+                  - button "Delete" [ref=e674] [cursor=pointer]:
+                    - img [ref=e675]
+                    - text: Delete

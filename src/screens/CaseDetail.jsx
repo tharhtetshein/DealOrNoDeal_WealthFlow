@@ -34,6 +34,7 @@ import {
   hasRequiredDocuments,
   hasRequiredFields,
   removeDocumentFromCase,
+  rerunRuleEvaluation,
   submitCaseForCompliance,
   updateCaseData,
 } from '../lib/caseFiles'
@@ -45,6 +46,7 @@ const tabs = [
   { id: 'documents', label: 'Documents' },
   { id: 'ai-insights', label: 'AI Insights' },
   { id: 'sow-draft', label: 'SoW Draft' },
+  { id: 'applied-rules', label: 'Applied Rules' },
   { id: 'risk-issues', label: 'Risk & Issues' },
   { id: 'audit-trail', label: 'Audit Trail' },
 ]
@@ -636,7 +638,14 @@ function buildAuditEntries(caseFile) {
     }]
     : []
 
-  return [...statusEntries, ...documentEntries, ...analysisEntry, ...submissionEntry]
+  const ruleEntries = (caseFile?.ruleSnapshots || []).map((snapshot) => ({
+    timestampRaw: snapshot.evaluatedAt,
+    timestamp: formatDateTime(snapshot.evaluatedAt),
+    actor: 'Rule Engine',
+    action: `Evaluated ${snapshot.activeRuleVersions?.length || 0} active rule(s); ${snapshot.triggeredRules?.length || 0} triggered. Rule set ${snapshot.ruleSetVersion}.`,
+  }))
+
+  return [...statusEntries, ...documentEntries, ...analysisEntry, ...submissionEntry, ...ruleEntries]
     .filter((entry) => entry.timestampRaw)
     .sort((a, b) => Date.parse(b.timestampRaw || '') - Date.parse(a.timestampRaw || ''))
 }
@@ -787,6 +796,7 @@ export default function CaseDetail({ onNavigate }) {
     }
 
     const completionSummary = getDocumentCompletionSummary(caseFile)
+    const ruleSnapshot = caseFile._lastRuleSnapshot || caseFile.ruleSnapshots?.[caseFile.ruleSnapshots.length - 1] || null
     const profileType = getClientProfileType(caseFile)
     const completedCategories = readinessSummary?.documents?.completed ?? completionSummary.requiredCompletedCount
     const missingCategories = completionSummary.missingCategoryLabels
@@ -849,7 +859,7 @@ export default function CaseDetail({ onNavigate }) {
       || normalizedAnalysisData.mismatches.some((mismatch) => String(mismatch.severity || '').toLowerCase() === 'high')
     const hasHighPriorityFollowUp = normalizedAnalysisData.suggestions.some((suggestion) => getActionPriority(suggestion) === 'High')
       || normalizedAnalysisData.missingSupportingEvidence.some((item) => getActionPriority(`${item.document} ${item.issue} ${item.reason}`) === 'High')
-    const riskLevel = deriveRiskLevel({
+    const riskLevel = readinessSummary?.rules?.riskLevel || ruleSnapshot?.computedMetrics?.finalRiskLevel || deriveRiskLevel({
       missingCategories,
       mismatches: normalizedAnalysisData.mismatches,
       riskFlags: hasHighPriorityFollowUp
@@ -917,6 +927,7 @@ export default function CaseDetail({ onNavigate }) {
       riskLevel,
       riskClearanceReason,
       profileType,
+      ruleSnapshot,
       auditEntries: buildAuditEntries(caseFile),
     }
   }, [caseFile, sowDraftText, analysisSnapshot, analysisUpdatedAt, readinessSummary])
@@ -964,6 +975,18 @@ export default function CaseDetail({ onNavigate }) {
     setReadinessSummary(calculateReadinessScore(result.caseFile))
     setMessage('Case submitted successfully. Status updated to Pending Review.')
     setSubmitting(false)
+  }
+
+  const handleRerunRules = async () => {
+    if (!caseFile?.id) return
+    const result = await rerunRuleEvaluation(caseFile.id, { triggeredBy: 'manual-rerun', evaluatedBy: 'Compliance Officer' })
+    if (!result.ok) {
+      setMessage(result.reason || 'Rule evaluation failed.')
+      return
+    }
+    setCaseFile(result.caseFile)
+    setReadinessSummary(calculateReadinessScore(result.caseFile))
+    setMessage('Rule evaluation snapshot refreshed.')
   }
 
   const triggerUploadForType = (documentType) => {
@@ -1699,6 +1722,103 @@ export default function CaseDetail({ onNavigate }) {
     </SectionCard>
   )
 
+  const renderAppliedRules = () => {
+    const snapshot = derived.ruleSnapshot
+    const triggeredRules = snapshot?.triggeredRules || []
+    const actions = snapshot?.aggregatedActions || {}
+
+    return (
+      <SectionCard
+        title="Applied Rules"
+        description="Rule snapshot retained on the case record."
+        icon={FileBadge2}
+        action={(
+          <button
+            onClick={handleRerunRules}
+            className="inline-flex items-center gap-2 rounded-xl border border-primary/20 bg-primary/10 px-3 py-2 text-xs font-semibold text-primary hover:bg-primary/15"
+          >
+            <ScanSearch className="w-4 h-4" />
+            Re-run Rules
+          </button>
+        )}
+      >
+        {!snapshot ? (
+          <div className="rounded-2xl border border-warning/20 bg-warning/5 p-4">
+            <p className="text-sm font-semibold text-on-surface">No rule snapshot on this case.</p>
+            <p className="mt-1 text-sm text-on-surface-variant">Use Re-run Rules to attach a deterministic snapshot using the current active published rules.</p>
+          </div>
+        ) : (
+          <div className="space-y-5">
+            <div className="grid grid-cols-1 md:grid-cols-4 gap-3">
+              {[
+                ['Rule Set', snapshot.ruleSetVersion],
+                ['Evaluated', formatDateTime(snapshot.evaluatedAt)],
+                ['Triggered', triggeredRules.length],
+                ['Risk / Readiness', `${snapshot.computedMetrics?.finalRiskLevel || 'Low'} / ${snapshot.computedMetrics?.finalReadiness ?? 0}%`],
+              ].map(([label, value]) => (
+                <div key={label} className="rounded-2xl bg-surface p-4">
+                  <p className="text-xs uppercase tracking-[0.16em] text-on-surface-variant">{label}</p>
+                  <p className="mt-2 text-sm font-semibold text-on-surface">{value}</p>
+                </div>
+              ))}
+            </div>
+
+            <div className="grid grid-cols-1 xl:grid-cols-[minmax(0,1fr)_360px] gap-5">
+              <div className="space-y-3">
+                {triggeredRules.length > 0 ? triggeredRules.map((rule) => (
+                  <div key={`${rule.ruleId}-${rule.ruleVersion}`} className="rounded-2xl border border-outline/10 bg-surface p-4">
+                    <div className="flex flex-wrap items-start justify-between gap-3">
+                      <div>
+                        <p className="font-semibold text-on-surface">{rule.ruleName}</p>
+                        <p className="mt-1 text-xs text-on-surface-variant">ID {rule.ruleId} v{rule.ruleVersion}</p>
+                      </div>
+                      <span className="rounded-full bg-primary/10 px-2.5 py-1 text-xs font-semibold text-primary">
+                        {rule.policyReference}
+                      </span>
+                    </div>
+                    <p className="mt-3 text-xs leading-5 text-on-surface-variant">
+                      {rule.matchedConditions?.reason || 'Conditions matched.'}
+                    </p>
+                    <div className="mt-3 flex flex-wrap gap-2">
+                      {(rule.actionsApplied || []).map((action, index) => (
+                        <span key={`${action.type}-${index}`} className="rounded-full bg-surface-container px-2.5 py-1 text-xs text-on-surface-variant">
+                          {action.type}{action.target ? `: ${action.target}` : ''}
+                        </span>
+                      ))}
+                    </div>
+                  </div>
+                )) : (
+                  <div className="rounded-2xl border border-outline/10 bg-surface p-4 text-sm text-on-surface-variant">
+                    No rules triggered for this snapshot.
+                  </div>
+                )}
+              </div>
+
+              <div className="space-y-3">
+                <div className="rounded-2xl border border-outline/10 bg-surface p-4">
+                  <p className="text-sm font-semibold text-on-surface mb-3">Aggregated Actions</p>
+                  <div className="space-y-2 text-xs text-on-surface-variant">
+                    <p>Required documents: {(actions.requiredDocuments || []).length}</p>
+                    <p>Risk modifiers: {(actions.riskModifiers || []).length}</p>
+                    <p>Readiness penalties: {(actions.readinessPenalties || []).length}</p>
+                    <p>Checklist items: {(actions.checklistItems || []).length}</p>
+                    <p>Submission blockers: {(actions.blockers || []).length}</p>
+                  </div>
+                </div>
+                {(actions.blockers || []).map((blocker, index) => (
+                  <div key={index} className="rounded-2xl border border-error/15 bg-error/5 p-4">
+                    <p className="text-sm font-semibold text-error">Blocker</p>
+                    <p className="mt-2 text-sm text-on-surface-variant">{blocker.reason}</p>
+                  </div>
+                ))}
+              </div>
+            </div>
+          </div>
+        )}
+      </SectionCard>
+    )
+  }
+
   const renderRiskIssues = () => {
     const aiHasRun = Boolean(analysisSnapshot || caseFile?.aiAnalysis)
     const aiIsFresh = hasFreshAiAnalysis(caseFile)
@@ -1978,6 +2098,7 @@ export default function CaseDetail({ onNavigate }) {
         {activeTab === 'documents' ? renderDocuments() : null}
         {activeTab === 'ai-insights' ? renderAiInsights() : null}
         {activeTab === 'sow-draft' ? renderSowDraft() : null}
+        {activeTab === 'applied-rules' ? renderAppliedRules() : null}
         {activeTab === 'risk-issues' ? renderRiskIssues() : null}
         {activeTab === 'audit-trail' ? renderAuditTrail() : null}
       </div>

@@ -1,0 +1,86 @@
+- generic [ref=e221]:
+  - complementary [ref=e222]:
+    - button "WEALTHFLOW Crimson Reserve" [ref=e223] [cursor=pointer]:
+      - generic [ref=e224]:
+        - img [ref=e226]
+        - generic [ref=e230]:
+          - heading "WEALTHFLOW" [level=1] [ref=e231]
+          - paragraph [ref=e232]: Crimson Reserve
+    - navigation [ref=e233]:
+      - button "Dashboard" [ref=e234] [cursor=pointer]:
+        - img [ref=e235]
+        - text: Dashboard
+      - button "Case Files" [ref=e240] [cursor=pointer]:
+        - img [ref=e241]
+        - text: Case Files
+      - button "Documents" [ref=e243] [cursor=pointer]:
+        - img [ref=e244]
+        - text: Documents
+      - button "System Audit Log" [ref=e247] [cursor=pointer]:
+        - img [ref=e248]
+        - text: System Audit Log
+      - button "Rule Admin" [ref=e251] [cursor=pointer]:
+        - img [ref=e252]
+        - text: Rule Admin
+    - button "Sign Out" [ref=e259] [cursor=pointer]:
+      - img [ref=e260]
+      - text: Sign Out
+  - generic [ref=e263]:
+    - banner [ref=e264]:
+      - generic [ref=e265]:
+        - heading "WealthFlow SoW" [level=1] [ref=e268]
+        - generic [ref=e269]:
+          - generic [ref=e270]:
+            - img [ref=e271]
+            - textbox "Search cases, clients..." [ref=e274]
+          - button [ref=e275] [cursor=pointer]:
+            - img [ref=e276]
+          - generic [ref=e282]: JS
+    - main [ref=e283]:
+      - generic [ref=e285]:
+        - generic [ref=e286]:
+          - paragraph [ref=e287]: Compliance Workspace
+          - heading "Review Queue" [level=1] [ref=e288]
+          - paragraph [ref=e289]: Review submitted cases, approve clean files, or return issues for remediation.
+        - generic [ref=e290]:
+          - generic [ref=e291]:
+            - img [ref=e293]
+            - paragraph [ref=e296]: "0"
+            - paragraph [ref=e297]: Pending Review
+          - generic [ref=e298]:
+            - img [ref=e300]
+            - paragraph [ref=e303]: "0"
+            - paragraph [ref=e304]: Under Review
+          - generic [ref=e305]:
+            - img [ref=e307]
+            - paragraph [ref=e311]: "0"
+            - paragraph [ref=e312]: Escalated
+          - generic [ref=e313]:
+            - img [ref=e315]
+            - paragraph [ref=e318]: "0"
+            - paragraph [ref=e319]: Approved
+        - generic [ref=e320]:
+          - generic [ref=e321]:
+            - generic [ref=e322]:
+              - heading "Cases for Compliance" [level=2] [ref=e323]
+              - paragraph [ref=e324]: Only submitted, in-review, escalated, and approved cases appear here.
+            - generic [ref=e325]:
+              - generic [ref=e326]:
+                - img [ref=e327]
+                - textbox "Search client or case ID" [ref=e330]
+              - generic [ref=e331]:
+                - button "All" [ref=e332] [cursor=pointer]
+                - button "Pending Review" [ref=e333] [cursor=pointer]
+                - button "Under Review" [ref=e334] [cursor=pointer]
+                - button "Escalated" [ref=e335] [cursor=pointer]
+                - button "Action Required" [ref=e336] [cursor=pointer]
+                - button "Rejected" [ref=e337] [cursor=pointer]
+                - button "Approved" [ref=e338] [cursor=pointer]
+            - generic [ref=e340]:
+              - img [ref=e341]
+              - paragraph [ref=e344]: No cases in this queue.
+              - paragraph [ref=e345]: Cases appear here after Ops/RM submits them for review.
+          - complementary [ref=e346]:
+            - generic [ref=e348]:
+              - img [ref=e349]
+              - paragraph [ref=e352]: Select a case to review.

@@ -1,0 +1,137 @@
+- generic [ref=e353]:
+  - complementary [ref=e354]:
+    - button "WEALTHFLOW Crimson Reserve" [ref=e355] [cursor=pointer]:
+      - generic [ref=e356]:
+        - img [ref=e358]
+        - generic [ref=e362]:
+          - heading "WEALTHFLOW" [level=1] [ref=e363]
+          - paragraph [ref=e364]: Crimson Reserve
+    - navigation [ref=e365]:
+      - button "Dashboard" [ref=e366] [cursor=pointer]:
+        - img [ref=e367]
+        - text: Dashboard
+      - button "Case Files" [ref=e372] [cursor=pointer]:
+        - img [ref=e373]
+        - text: Case Files
+      - button "Documents" [ref=e375] [cursor=pointer]:
+        - img [ref=e376]
+        - text: Documents
+      - button "System Audit Log" [ref=e379] [cursor=pointer]:
+        - img [ref=e380]
+        - text: System Audit Log
+      - button "Rule Admin" [ref=e383] [cursor=pointer]:
+        - img [ref=e384]
+        - text: Rule Admin
+    - button "Sign Out" [ref=e391] [cursor=pointer]:
+      - img [ref=e392]
+      - text: Sign Out
+  - generic [ref=e395]:
+    - banner [ref=e396]:
+      - generic [ref=e397]:
+        - heading "WealthFlow SoW" [level=1] [ref=e400]
+        - generic [ref=e401]:
+          - generic [ref=e402]:
+            - img [ref=e403]
+            - textbox "Search cases, clients..." [ref=e406]
+          - button [ref=e407] [cursor=pointer]:
+            - img [ref=e408]
+          - generic [ref=e414]: JS
+    - main [ref=e415]:
+      - generic [ref=e417]:
+        - generic [ref=e418]:
+          - generic [ref=e419]:
+            - heading "Rule Engine Admin" [level=1] [ref=e420]
+            - paragraph [ref=e421]: Manage compliance rules, test policies, and review evaluation history
+          - generic [ref=e422]:
+            - button "Back" [ref=e423] [cursor=pointer]
+            - button "New Rule" [active] [ref=e424] [cursor=pointer]
+            - button "Reset Defaults" [ref=e425] [cursor=pointer]
+        - generic [ref=e426]:
+          - button "Rules" [ref=e427] [cursor=pointer]
+          - button "Editor" [ref=e428] [cursor=pointer]
+          - button "Sandbox" [ref=e429] [cursor=pointer]
+        - generic [ref=e668]:
+          - generic [ref=e669]:
+            - heading "New Rule" [level=3] [ref=e670]
+            - paragraph [ref=e671]: Define conditions and actions for automated compliance evaluation
+          - generic [ref=e672]:
+            - generic [ref=e673]:
+              - generic [ref=e674]:
+                - text: Rule Name
+                - textbox "Rule Name" [ref=e675]:
+                  - /placeholder: e.g., Require FATCA for US Persons
+              - generic [ref=e676]:
+                - text: Rule ID
+                - textbox "Rule ID" [disabled] [ref=e677]
+            - generic [ref=e678]:
+              - text: Description
+              - textbox "Description" [ref=e679]:
+                - /placeholder: Explain what this rule evaluates and why...
+            - generic [ref=e680]:
+              - generic [ref=e681]:
+                - text: Priority
+                - spinbutton "Priority" [ref=e682]: "100"
+              - generic [ref=e683]:
+                - text: Policy Reference
+                - textbox "Policy Reference" [ref=e684]:
+                  - /placeholder: e.g., KYC-2024-001
+              - generic [ref=e685]:
+                - text: Effective From
+                - textbox "Effective From" [ref=e686]: 2026-05-02
+            - generic [ref=e687]:
+              - generic [ref=e688]:
+                - heading "Conditions" [level=4] [ref=e689]
+                - combobox [ref=e691]:
+                  - option "Match ALL (AND)" [selected]
+                  - option "Match ANY (OR)"
+              - generic [ref=e693]:
+                - combobox [ref=e694]:
+                  - option "Select field..." [selected]
+                  - option "Client Profile Type"
+                  - option "Net Worth"
+                  - option "Risk Appetite"
+                  - option "US Person"
+                  - option "PEP Status"
+                  - option "Document Count"
+                  - option "Has Passport/ID"
+                  - option "Has Address Proof"
+                  - option "Has Tax Residency"
+                  - option "Has SoW Declaration"
+                  - option "Has Bank Statements"
+                  - option "Has Employment Docs"
+                  - option "Has Business Docs"
+                  - option "Has Investment Docs"
+                  - option "AI Risk Count"
+                  - option "AI Mismatch Count"
+                  - option "Case Status"
+                - combobox [ref=e695]:
+                  - option "Equals (==)" [selected]
+                  - option "Not Equals (!=)"
+                  - option "Greater Than (>)"
+                  - option "Less Than (<)"
+                  - option "Greater Than or Equal (>=)"
+                  - option "Less Than or Equal (<=)"
+                  - option "In List (in)"
+                  - option "Exists (exists)"
+                - textbox "Value" [ref=e696]
+                - button "Remove" [ref=e697] [cursor=pointer]
+              - button "+ Add Condition" [ref=e698] [cursor=pointer]
+            - generic [ref=e699]:
+              - heading "Actions" [level=4] [ref=e700]
+              - generic [ref=e702]:
+                - generic [ref=e703]:
+                  - combobox [ref=e704]:
+                    - option "Require Document" [selected]
+                    - option "Modify Risk"
+                    - option "Modify Readiness"
+                    - option "Add Checklist Item"
+                    - option "Block Submission"
+                  - button "Remove" [ref=e705] [cursor=pointer]
+                - generic [ref=e706]:
+                  - textbox "Document key (e.g., tax-residency)" [ref=e707]
+                  - textbox "Label (e.g., Tax Residency Form)" [ref=e708]
+                  - textbox "Reason" [ref=e709]
+              - button "+ Add Action" [ref=e710] [cursor=pointer]
+            - generic [ref=e711]:
+              - button "Cancel" [ref=e712] [cursor=pointer]
+              - button "Save Draft" [ref=e713] [cursor=pointer]

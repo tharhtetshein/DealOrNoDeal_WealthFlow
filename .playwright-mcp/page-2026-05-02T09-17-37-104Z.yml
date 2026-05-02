@@ -1,0 +1,118 @@
+- generic [ref=e406]:
+  - complementary [ref=e407]:
+    - button "WEALTHFLOW Crimson Reserve" [ref=e408] [cursor=pointer]:
+      - generic [ref=e409]:
+        - img [ref=e411]
+        - generic [ref=e415]:
+          - heading "WEALTHFLOW" [level=1] [ref=e416]
+          - paragraph [ref=e417]: Crimson Reserve
+    - navigation [ref=e418]:
+      - button "Dashboard" [ref=e419] [cursor=pointer]:
+        - img [ref=e420]
+        - text: Dashboard
+      - button "Case Files" [ref=e425] [cursor=pointer]:
+        - img [ref=e426]
+        - text: Case Files
+      - button "Documents" [ref=e428] [cursor=pointer]:
+        - img [ref=e429]
+        - text: Documents
+      - button "System Audit Log" [ref=e432] [cursor=pointer]:
+        - img [ref=e433]
+        - text: System Audit Log
+      - button "Rule Admin" [ref=e436] [cursor=pointer]:
+        - img [ref=e437]
+        - text: Rule Admin
+    - button "Sign Out" [ref=e444] [cursor=pointer]:
+      - img [ref=e445]
+      - text: Sign Out
+  - generic [ref=e448]:
+    - banner [ref=e449]:
+      - generic [ref=e450]:
+        - heading "WealthFlow SoW" [level=1] [ref=e453]
+        - generic [ref=e454]:
+          - generic [ref=e455]:
+            - img [ref=e456]
+            - textbox "Search cases, clients..." [ref=e459]
+          - button [ref=e460] [cursor=pointer]:
+            - img [ref=e461]
+          - generic [ref=e467]: JS
+    - main [ref=e468]:
+      - generic [ref=e469]:
+        - generic [ref=e470]:
+          - heading "Initiate New Case" [level=1] [ref=e471]
+          - paragraph [ref=e472]: Onboarding comprehensive due diligence for high-net-worth entity.
+        - generic [ref=e473]:
+          - generic [ref=e474]:
+            - generic [ref=e475]:
+              - generic [ref=e476]:
+                - img [ref=e478]
+                - heading "Client Identity" [level=2] [ref=e481]
+              - generic [ref=e482]:
+                - generic [ref=e483]:
+                  - generic [ref=e484]: Full Legal Name
+                  - textbox "e.g. Alexander Sterling" [ref=e485]
+                - generic [ref=e486]:
+                  - generic [ref=e487]:
+                    - generic [ref=e488]: Nationality
+                    - generic [ref=e489]:
+                      - combobox [ref=e490]:
+                        - option "Select Country" [selected]
+                        - option "Switzerland"
+                        - option "Singapore"
+                        - option "United Kingdom"
+                        - option "United States"
+                      - img
+                  - generic [ref=e491]:
+                    - generic [ref=e492]: Primary Residence
+                    - generic [ref=e493]:
+                      - img [ref=e494]
+                      - textbox "e.g. Zurich, Switzerland" [ref=e497]
+            - generic [ref=e498]:
+              - generic [ref=e499]:
+                - img [ref=e501]
+                - heading "Economic Profile" [level=2] [ref=e504]
+              - generic [ref=e505]:
+                - generic [ref=e506]:
+                  - generic [ref=e507]: Principal Occupation
+                  - textbox "e.g. Tech Executive / Founder" [ref=e508]
+                - generic [ref=e509]:
+                  - generic [ref=e510]: Estimated Net Worth
+                  - generic [ref=e511]:
+                    - img [ref=e512]
+                    - textbox "0.00" [ref=e514]
+              - generic [ref=e515]:
+                - generic [ref=e516]: Primary Purpose of Account
+                - textbox "Describe the intended use for this private vault..." [ref=e517]
+            - generic [ref=e518]:
+              - button "Discard Draft" [ref=e519] [cursor=pointer]:
+                - img [ref=e520]
+                - text: Discard Draft
+              - button "Save for Later" [ref=e523] [cursor=pointer]:
+                - img [ref=e524]
+                - text: Save for Later
+              - button "Create Case Draft" [disabled] [ref=e528]:
+                - text: Create Case Draft
+                - img [ref=e529]
+          - generic [ref=e531]:
+            - generic [ref=e534]:
+              - generic [ref=e535]:
+                - img [ref=e536]
+                - generic [ref=e538]: Copilot Insight
+              - generic [ref=e539]:
+                - text: Risk Projection
+                - generic [ref=e543]: Low
+              - paragraph [ref=e545]: Based on the occupation and residence provided, this profile aligns with our Ultra-High tier protocols. Submit to get AI-powered risk assessment.
+              - generic [ref=e546]:
+                - generic [ref=e547]:
+                  - img [ref=e548]
+                  - generic [ref=e551]: "PEP Screening: Pending"
+                - generic [ref=e552]:
+                  - img [ref=e553]
+                  - generic [ref=e556]: "Adverse Media: Pending"
+                - generic [ref=e557]:
+                  - img [ref=e558]
+                  - generic [ref=e560]: "Missing: Document verification"
+            - generic [ref=e561]:
+              - img "Vault Security" [ref=e563]
+              - heading "Vault Security Standards" [level=3] [ref=e565]
+              - paragraph [ref=e566]: Ensure all residence documents are no more than 3 months old to meet Swiss Tier 1 banking requirements.

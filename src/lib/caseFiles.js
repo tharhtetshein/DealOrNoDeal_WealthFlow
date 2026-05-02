@@ -6,6 +6,9 @@ import {
   updateCaseFile as updateFirebaseCaseFile,
 } from './firebaseCases'
 import { hasFirebaseConfig, removeCaseDocumentFile } from './firebase'
+import { evaluateCaseRules } from './ruleEvaluation'
+import { buildRuleSnapshot, appendRuleSnapshot, logRuleEvaluationEvent } from './ruleAudit'
+import { STANDARD_CHECKLIST_ITEMS } from './ruleEngine'
 
 const CASES_STORAGE_KEY = 'wealthflow.caseFiles'
 const ACTIVE_CASE_STORAGE_KEY = 'wealthflow.activeCaseId'
@@ -158,6 +161,61 @@ function normalizeCaseFile(caseFile) {
   }
 }
 
+function attachRuleSnapshot(caseFile, options = {}) {
+  if (!caseFile || !caseFile.id) return caseFile
+  const snapshot = buildRuleSnapshot(caseFile, {
+    triggeredBy: options.triggeredBy || 'system',
+    evaluatedBy: options.evaluatedBy || 'system',
+  })
+  if (!snapshot) return caseFile
+  const enriched = appendRuleSnapshot(caseFile, snapshot)
+  enriched._ruleEvaluation = evaluateCaseRules(caseFile)
+  logRuleEvaluationEvent({
+    caseId: caseFile.id,
+    snapshotId: snapshot.snapshotId,
+    triggeredAt: snapshot.triggeredAt,
+    triggeredBy: snapshot.triggeredBy,
+    ruleSetVersion: snapshot.ruleSetVersion,
+    triggeredRules: snapshot.triggeredRules.length,
+    activeRules: snapshot.activeRuleVersions.length,
+  })
+  return enriched
+}
+
+function getRuleDecisionSnapshot(caseFile) {
+  return caseFile?._lastRuleSnapshot
+    || (Array.isArray(caseFile?.ruleSnapshots) ? caseFile.ruleSnapshots[caseFile.ruleSnapshots.length - 1] : null)
+    || null
+}
+
+function persistRuleSnapshot(caseFile, options = {}) {
+  return upsertLocalCaseFile(attachRuleSnapshot(caseFile, options))
+}
+
+export async function rerunRuleEvaluation(caseId, options = {}) {
+  const existing = getLocalCaseFileById(caseId) || normalizeCaseFile(await getFirebaseCaseFile(caseId))
+  if (!existing) return { ok: false, reason: 'Case not found' }
+
+  const updated = persistRuleSnapshot(existing, {
+    triggeredBy: options.triggeredBy || 'manual-rerun',
+    evaluatedBy: options.evaluatedBy || 'Compliance Officer',
+  })
+
+  if (hasFirebaseConfig) {
+    try {
+      await updateFirebaseCaseFile(caseId, {
+        ruleSnapshots: updated.ruleSnapshots,
+        _lastRuleSnapshot: updated._lastRuleSnapshot,
+        updatedAt: new Date().toISOString(),
+      })
+    } catch (error) {
+      console.warn('Unable to persist rule snapshot to Firebase:', error)
+    }
+  }
+
+  return { ok: true, caseFile: updated, snapshot: updated._lastRuleSnapshot }
+}
+
 function hasNoDocuments(caseFile) {
   return (caseFile?.documents || []).length === 0
 }
@@ -176,6 +234,20 @@ export function getClientProfileType(caseFile) {
 }
 
 function getRequiredDocumentDefinitions(caseFile) {
+  const snapshot = getRuleDecisionSnapshot(caseFile)
+  const ruleRequired = snapshot?.aggregatedActions?.requiredDocuments || caseFile?._ruleEvaluation?.aggregatedActions?.requiredDocuments || []
+  if (ruleRequired.length > 0) {
+    return ruleRequired.map((item) => ({
+      key: String(item.target || item.label || '').toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/^_|_$/g, ''),
+      label: item.target || item.label,
+      category: item.category || 'Rule Required Documents',
+      alwaysRequired: true,
+      reason: item.reason || item.sources?.[0]?.ruleName || 'Required by active compliance rule.',
+      ruleDriven: true,
+      sources: item.sources || [],
+    }))
+  }
+
   const profileType = getClientProfileType(caseFile)
   return DOCUMENT_DEFINITIONS.filter((definition) => {
     if (definition.alwaysRequired) return true
@@ -243,6 +315,8 @@ export function getDocumentCompletionSummary(caseFile) {
       status: state,
       isSatisfied: state === 'uploaded',
       missingReason: definition.reason,
+      ruleDriven: Boolean(definition.ruleDriven),
+      sources: definition.sources || [],
     }
   })
 
@@ -419,7 +493,10 @@ export function calculateReadinessScore(caseFile) {
   const completedItems = (profileComplete ? 1 : 0)
     + completionSummary.requiredCompletedCount
     + (riskCleared ? 1 : 0)
-  const percentage = totalItems === 0 ? 0 : Math.round((completedItems / totalItems) * 100)
+  const baselinePercentage = totalItems === 0 ? 0 : Math.round((completedItems / totalItems) * 100)
+  const snapshot = getRuleDecisionSnapshot(normalized)
+  const percentage = snapshot?.computedMetrics?.finalReadiness ?? baselinePercentage
+  const ruleRisk = snapshot?.computedMetrics?.finalRiskLevel || null
 
   return {
     percentage,
@@ -442,7 +519,16 @@ export function calculateReadinessScore(caseFile) {
       aiAnalysisCompleted: hasFreshAiAnalysis(normalized),
       hasHighOrCriticalRisk: hasCriticalIssues(normalized),
       highPriorityFollowUps: highPriorityFollowUps.length,
+      ruleAdjustedRisk: ruleRisk,
     },
+    rules: snapshot ? {
+      ruleSetVersion: snapshot.ruleSetVersion,
+      evaluatedAt: snapshot.evaluatedAt,
+      triggeredRuleCount: snapshot.triggeredRules?.length || 0,
+      readinessPenalty: snapshot.computedMetrics?.readinessPenalty || 0,
+      riskLevel: ruleRisk,
+      blockers: snapshot.aggregatedActions?.blockers || [],
+    } : null,
   }
 }
 
@@ -663,13 +749,21 @@ export async function getCaseFileById(caseId) {
   return withStorageFallback(
     async () => {
       const caseFile = normalizeCaseFile(await getFirebaseCaseFile(caseId))
-      if (caseFile) {
-        upsertLocalCaseFile(caseFile)
-      }
+      if (caseFile) upsertLocalCaseFile(caseFile)
       return caseFile
     },
-    async () => getLocalCaseFileById(caseId),
+    async () => {
+      const caseFile = getLocalCaseFileById(caseId)
+      return caseFile || null
+    },
   )
+}
+
+export function getAllLocalCaseFiles() {
+  if (typeof window === 'undefined') return []
+  const raw = window.localStorage.getItem(CASES_STORAGE_KEY)
+  const cases = raw ? safeParse(raw, []) : []
+  return cases.map(normalizeCaseFile)
 }
 
 export function setActiveCaseId(caseId) {
@@ -712,12 +806,9 @@ export async function createDraftCase(formData) {
 
       const id = await createFirebaseCaseFile(payload)
       const caseFile = normalizeCaseFile(await getFirebaseCaseFile(id))
-      if (caseFile) {
-        upsertLocalCaseFile(caseFile)
-      }
-      return caseFile
+      return caseFile ? persistRuleSnapshot(caseFile, { triggeredBy: 'createCase' }) : null
     },
-    async () => createLocalDraftCase(formData),
+    async () => persistRuleSnapshot(createLocalDraftCase(formData), { triggeredBy: 'createCase' }),
   )
 }
 
@@ -751,10 +842,7 @@ export async function updateCaseCore(caseId, formData) {
       })
 
       const updated = normalizeCaseFile(await getFirebaseCaseFile(caseId))
-      if (updated) {
-        upsertLocalCaseFile(updated)
-      }
-      return updated
+      return updated ? persistRuleSnapshot(updated, { triggeredBy: 'profile-save' }) : null
     },
     async () => {
       const existing = getLocalCaseFileById(caseId)
@@ -771,7 +859,7 @@ export async function updateCaseCore(caseId, formData) {
         updatedAt: new Date().toISOString(),
       }
 
-      return upsertLocalCaseFile(applySystemDerivedStatus(merged, 'Profile updated'))
+      return persistRuleSnapshot(applySystemDerivedStatus(merged, 'Profile updated'), { triggeredBy: 'profile-save' })
     },
   )
 }
@@ -807,10 +895,7 @@ export async function updateCaseData(caseId, payload) {
       await updateFirebaseCaseFile(caseId, merged)
 
       const updated = normalizeCaseFile(await getFirebaseCaseFile(caseId))
-      if (updated) {
-        upsertLocalCaseFile(updated)
-      }
-      return updated
+      return updated ? persistRuleSnapshot(updated, { triggeredBy: 'updateCaseData' }) : null
     },
     async () => {
       const existing = getLocalCaseFileById(caseId)
@@ -839,7 +924,7 @@ export async function updateCaseData(caseId, payload) {
         nextCase = applySystemDerivedStatus(nextCase, 'Case data updated')
       }
 
-      return upsertLocalCaseFile(nextCase)
+      return persistRuleSnapshot(nextCase, { triggeredBy: 'updateCaseData' })
     },
   )
 }
@@ -893,10 +978,7 @@ export async function addDocumentToCase(caseId, documentMeta) {
       })
 
       const updated = normalizeCaseFile(await getFirebaseCaseFile(caseId))
-      if (updated) {
-        upsertLocalCaseFile(updated)
-      }
-      return updated
+      return updated ? persistRuleSnapshot(updated, { triggeredBy: 'addDocument' }) : null
     },
     async () => {
       const existing = getLocalCaseFileById(caseId)
@@ -911,7 +993,7 @@ export async function addDocumentToCase(caseId, documentMeta) {
 
       const nextCase = applySystemDerivedStatus(merged, 'Document added')
 
-      return upsertLocalCaseFile(nextCase)
+      return persistRuleSnapshot(nextCase, { triggeredBy: 'addDocument' })
     },
   )
 }
@@ -948,10 +1030,7 @@ export async function removeDocumentFromCase(caseId, documentId) {
       }
 
       const updated = normalizeCaseFile(await getFirebaseCaseFile(caseId))
-      if (updated) {
-        upsertLocalCaseFile(updated)
-      }
-      return updated
+      return updated ? persistRuleSnapshot(updated, { triggeredBy: 'removeDocument' }) : null
     },
     async () => {
       const existing = getLocalCaseFileById(caseId)
@@ -964,7 +1043,7 @@ export async function removeDocumentFromCase(caseId, documentId) {
         updatedAt: new Date().toISOString(),
       }
 
-      return upsertLocalCaseFile(applySystemDerivedStatus(nextCase, 'Document removed'))
+      return persistRuleSnapshot(applySystemDerivedStatus(nextCase, 'Document removed'), { triggeredBy: 'removeDocument' })
     },
   )
 }
@@ -1520,15 +1599,7 @@ export async function reviewDocument(caseId, documentId, reviewAction, comment =
 }
 
 // Compliance Checklist Management
-export const COMPLIANCE_CHECKLIST_ITEMS = [
-  { key: 'identity_verified', label: 'Identity verified', category: 'KYC' },
-  { key: 'address_proof_checked', label: 'Address proof checked', category: 'KYC' },
-  { key: 'tax_residency_checked', label: 'Tax residency checked', category: 'Tax' },
-  { key: 'sow_reviewed', label: 'Source of Wealth reviewed', category: 'SoW' },
-  { key: 'bank_statements_reviewed', label: 'Bank statements reviewed', category: 'SoF' },
-  { key: 'ai_risks_reviewed', label: 'AI risks reviewed', category: 'Risk' },
-  { key: 'mismatches_resolved', label: 'Mismatches resolved', category: 'Risk' },
-]
+export const COMPLIANCE_CHECKLIST_ITEMS = STANDARD_CHECKLIST_ITEMS
 
 export async function updateComplianceChecklist(caseId, checklistUpdates) {
   return withStorageFallback(
@@ -1546,12 +1617,26 @@ export async function updateComplianceChecklist(caseId, checklistUpdates) {
             checkedAt: value.checked ? new Date().toISOString() : null,
             checkedBy: value.checked ? 'Compliance Officer' : null,
             note: value.note || '',
+            overrideReason: value.overrideReason || '',
+            overridePolicyReference: value.overridePolicyReference || '',
           }
         }
       })
+      const overrideEntries = Object.entries(checklistUpdates)
+        .filter(([, value]) => value.overrideReason || value.overridePolicyReference)
+        .map(([key, value]) => ({
+          id: `override-${Date.now()}-${key}`,
+          type: 'checklist',
+          key,
+          reason: value.overrideReason || '',
+          policyReference: value.overridePolicyReference || '',
+          createdAt: new Date().toISOString(),
+          createdBy: 'Compliance Officer',
+        }))
 
       await updateFirebaseCaseFile(caseId, {
         complianceChecklist: updatedChecklist,
+        complianceOverrides: [...(existing.complianceOverrides || []), ...overrideEntries],
         updatedAt: new Date().toISOString(),
       })
 
@@ -1573,13 +1658,27 @@ export async function updateComplianceChecklist(caseId, checklistUpdates) {
             checkedAt: value.checked ? new Date().toISOString() : null,
             checkedBy: value.checked ? 'Compliance Officer' : null,
             note: value.note || '',
+            overrideReason: value.overrideReason || '',
+            overridePolicyReference: value.overridePolicyReference || '',
           }
         }
       })
+      const overrideEntries = Object.entries(checklistUpdates)
+        .filter(([, value]) => value.overrideReason || value.overridePolicyReference)
+        .map(([key, value]) => ({
+          id: `override-${Date.now()}-${key}`,
+          type: 'checklist',
+          key,
+          reason: value.overrideReason || '',
+          policyReference: value.overridePolicyReference || '',
+          createdAt: new Date().toISOString(),
+          createdBy: 'Compliance Officer',
+        }))
 
       const updated = upsertLocalCaseFile({
         ...existing,
         complianceChecklist: updatedChecklist,
+        complianceOverrides: [...(existing.complianceOverrides || []), ...overrideEntries],
         updatedAt: new Date().toISOString(),
       })
 
@@ -1590,18 +1689,34 @@ export async function updateComplianceChecklist(caseId, checklistUpdates) {
 
 export function getComplianceChecklistStatus(caseFile) {
   const checklist = caseFile?.complianceChecklist || {}
-  const total = COMPLIANCE_CHECKLIST_ITEMS.length
-  const completed = COMPLIANCE_CHECKLIST_ITEMS.filter((item) => checklist[item.key]?.checked).length
+  const snapshot = getRuleDecisionSnapshot(caseFile)
+  const dynamicItems = snapshot?.aggregatedActions?.checklistItems || []
+  const itemMap = new Map(COMPLIANCE_CHECKLIST_ITEMS.map((item) => [item.key, { ...item, ruleDriven: false }]))
+  dynamicItems.forEach((item) => {
+    itemMap.set(item.key, {
+      key: item.key,
+      label: item.label,
+      category: item.category || 'Rule-Driven',
+      ruleDriven: true,
+      policyReference: item.policyRef,
+      sources: item.sources || [],
+      reason: item.reason,
+    })
+  })
+  ;(snapshot?.aggregatedActions?.removedChecklistKeys || []).forEach((key) => itemMap.delete(key))
+  const items = Array.from(itemMap.values()).map((item) => ({
+    ...item,
+    ...checklist[item.key],
+  }))
+  const total = items.length
+  const completed = items.filter((item) => item.checked).length
   const allComplete = completed === total
 
   return {
     total,
     completed,
     allComplete,
-    items: COMPLIANCE_CHECKLIST_ITEMS.map((item) => ({
-      ...item,
-      ...checklist[item.key],
-    })),
+    items,
   }
 }
 

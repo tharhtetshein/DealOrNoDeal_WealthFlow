@@ -4,7 +4,8 @@ import {
   FileText,
   ClipboardList,
   LogOut,
-  Building2
+  Building2,
+  Gavel
 } from 'lucide-react'
 
 const defaultNavItems = [
@@ -12,6 +13,7 @@ const defaultNavItems = [
   { id: 'cases', label: 'Case Files', icon: FolderKanban },
   { id: 'documents', label: 'Documents', icon: FileText },
   { id: 'audit', label: 'System Audit Log', icon: ClipboardList },
+  { id: 'rule-admin', label: 'Rule Admin', icon: Gavel },
 ]
 
 const rmNavItems = [

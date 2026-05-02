@@ -1,0 +1,102 @@
+- generic [ref=e678]:
+  - complementary [ref=e679]:
+    - button "WEALTHFLOW Crimson Reserve" [ref=e680] [cursor=pointer]:
+      - generic [ref=e681]:
+        - img [ref=e683]
+        - generic [ref=e687]:
+          - heading "WEALTHFLOW" [level=1] [ref=e688]
+          - paragraph [ref=e689]: Crimson Reserve
+    - navigation [ref=e690]:
+      - button "Dashboard" [ref=e691] [cursor=pointer]:
+        - img [ref=e692]
+        - text: Dashboard
+      - button "Case Files" [ref=e697] [cursor=pointer]:
+        - img [ref=e698]
+        - text: Case Files
+      - button "Documents" [ref=e700] [cursor=pointer]:
+        - img [ref=e701]
+        - text: Documents
+      - button "System Audit Log" [ref=e704] [cursor=pointer]:
+        - img [ref=e705]
+        - text: System Audit Log
+      - button "Rule Admin" [ref=e708] [cursor=pointer]:
+        - img [ref=e709]
+        - text: Rule Admin
+    - button "Sign Out" [ref=e716] [cursor=pointer]:
+      - img [ref=e717]
+      - text: Sign Out
+  - generic [ref=e720]:
+    - banner [ref=e721]:
+      - generic [ref=e722]:
+        - heading "WealthFlow SoW" [level=1] [ref=e725]
+        - generic [ref=e726]:
+          - generic [ref=e727]:
+            - img [ref=e728]
+            - textbox "Search cases, clients..." [ref=e731]
+          - button [ref=e732] [cursor=pointer]:
+            - img [ref=e733]
+          - generic [ref=e739]: JS
+    - main [ref=e740]:
+      - generic [ref=e741]:
+        - generic [ref=e743]:
+          - generic [ref=e744]:
+            - generic [ref=e745]:
+              - img [ref=e746]
+              - generic [ref=e748]: Progressive Document Collection
+            - heading "Documents" [level=1] [ref=e749]
+            - paragraph [ref=e750]: "Case: Test Rule Client (WF-20260502-0001)"
+            - paragraph [ref=e751]: "Current Status: Draft"
+          - generic [ref=e752]:
+            - paragraph [ref=e753]: Required Document Completeness
+            - paragraph [ref=e754]: 0% complete
+          - button "Mock All Documents" [ref=e756] [cursor=pointer]:
+            - img [ref=e757]
+            - text: Mock All Documents
+        - generic [ref=e760]:
+          - generic [ref=e762]:
+            - heading "Required Categories" [level=2] [ref=e763]
+            - generic [ref=e765]:
+              - generic [ref=e766]:
+                - generic [ref=e767]: Rule Required Documents
+                - generic [ref=e768]:
+                  - img [ref=e769]
+                  - text: Missing
+              - paragraph [ref=e771]: 0/9 uploaded
+          - generic [ref=e772]:
+            - generic [ref=e773]:
+              - heading "Upload Documents" [level=2] [ref=e774]
+              - generic [ref=e776]:
+                - generic [ref=e777]: Document Category
+                - generic [ref=e778]:
+                  - generic [ref=e779]:
+                    - generic [ref=e780]:
+                      - paragraph [ref=e781]: Still Needed
+                      - paragraph [ref=e783]: "Rule Required Documents: Passport / ID"
+                    - generic [ref=e784]:
+                      - paragraph [ref=e785]: Already Added
+                      - paragraph [ref=e786]: No document types uploaded yet.
+                  - combobox [ref=e787]:
+                    - option "Passport / ID (Not Uploaded)" [selected]
+                    - option "Address Proof (Not Uploaded)"
+                    - option "Tax Residency (Not Uploaded)"
+                    - option "SoW Declaration (Not Uploaded)"
+                    - option "Bank Statements (Source of Funds) (Not Uploaded)"
+                    - option "Business Registry Extract (Not Uploaded)"
+                    - option "Shareholding Structure (Not Uploaded)"
+                    - option "Company Financial Statements (Not Uploaded)"
+                    - option "Dividend Statements (Not Uploaded)"
+                  - generic [ref=e788]:
+                    - paragraph [ref=e789]: Uploaded document types (0)
+                    - paragraph [ref=e790]: No document types uploaded yet.
+              - generic [ref=e791] [cursor=pointer]:
+                - img [ref=e793]
+                - heading "Upload Files" [level=3] [ref=e796]
+                - paragraph [ref=e797]: PDF, JPG, PNG, TXT
+            - generic [ref=e798]:
+              - generic [ref=e799]:
+                - heading "Uploaded Documents" [level=2] [ref=e800]
+                - button "Submit for Review" [ref=e801] [cursor=pointer]:
+                  - img [ref=e802]
+                  - text: Submit for Review
+              - paragraph [ref=e805]: No documents uploaded yet. Case will remain Draft/Missing Documents until required docs are complete.
+              - paragraph [ref=e806]: Required categories/profile are incomplete. Status cannot move to Pending Review yet.

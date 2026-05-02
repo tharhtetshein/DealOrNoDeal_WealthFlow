@@ -21,6 +21,7 @@ import WealthReview from './screens/WealthReview'
 import SavedCaseFiles from './screens/SavedCaseFiles'
 import CaseDetail from './screens/CaseDetail'
 import ComplianceCaseReview from './screens/ComplianceCaseReview'
+import RuleAdmin from './screens/RuleAdmin'
 
 // Legacy screens for compatibility
 import ClientIntake from './screens/ClientIntake'
@@ -241,6 +242,13 @@ function App() {
         return (
           <AppLayout activeItem="cases">
             <SavedCaseFiles onNavigate={handleNavigate} />
+          </AppLayout>
+        )
+
+      case 'rule-admin':
+        return (
+          <AppLayout activeItem="rule-admin">
+            <RuleAdmin onBack={() => setCurrentScreen('dashboard')} />
           </AppLayout>
         )
       

@@ -1,0 +1,266 @@
+- generic [ref=e802]:
+  - complementary [ref=e803]:
+    - button "WEALTHFLOW Crimson Reserve" [ref=e804] [cursor=pointer]:
+      - generic [ref=e805]:
+        - img [ref=e807]
+        - generic [ref=e811]:
+          - heading "WEALTHFLOW" [level=1] [ref=e812]
+          - paragraph [ref=e813]: Crimson Reserve
+    - navigation [ref=e814]:
+      - button "Dashboard" [ref=e815] [cursor=pointer]:
+        - img [ref=e816]
+        - text: Dashboard
+      - button "Case Files" [ref=e821] [cursor=pointer]:
+        - img [ref=e822]
+        - text: Case Files
+      - button "Documents" [ref=e824] [cursor=pointer]:
+        - img [ref=e825]
+        - text: Documents
+      - button "System Audit Log" [ref=e828] [cursor=pointer]:
+        - img [ref=e829]
+        - text: System Audit Log
+      - button "Rule Admin" [ref=e832] [cursor=pointer]:
+        - img [ref=e833]
+        - text: Rule Admin
+    - button "Sign Out" [ref=e840] [cursor=pointer]:
+      - img [ref=e841]
+      - text: Sign Out
+  - generic [ref=e844]:
+    - banner [ref=e845]:
+      - generic [ref=e846]:
+        - heading "WealthFlow SoW" [level=1] [ref=e849]
+        - generic [ref=e850]:
+          - generic [ref=e851]:
+            - img [ref=e852]
+            - textbox "Search cases, clients..." [ref=e855]
+          - button [ref=e856] [cursor=pointer]:
+            - img [ref=e857]
+          - generic [ref=e863]: JS
+    - main [ref=e864]:
+      - generic [ref=e866]:
+        - generic [ref=e867]:
+          - generic [ref=e868]:
+            - heading "Rule Engine Admin" [level=1] [ref=e869]
+            - paragraph [ref=e870]: Manage compliance rules, test policies, and review evaluation history
+          - generic [ref=e871]:
+            - button "Back" [ref=e872] [cursor=pointer]
+            - button "New Rule" [ref=e873] [cursor=pointer]
+            - button "Reset Defaults" [ref=e874] [cursor=pointer]
+        - generic [ref=e875]:
+          - button "Rules" [ref=e876] [cursor=pointer]
+          - button "Editor" [ref=e877] [cursor=pointer]
+          - button "Sandbox" [ref=e878] [cursor=pointer]
+        - generic [ref=e879]:
+          - generic [ref=e882]:
+            - textbox "Search rules..." [ref=e884]
+            - combobox [ref=e885]:
+              - option "All Statuses" [selected]
+              - option "Published"
+              - option "Draft"
+              - option "Archived"
+            - generic [ref=e886]: 12 rules
+          - generic [ref=e887]:
+            - generic [ref=e890]:
+              - generic [ref=e891]:
+                - generic [ref=e892]:
+                  - heading "KYC Documents Mandatory" [level=3] [ref=e893]
+                  - generic [ref=e894]: Published
+                  - generic [ref=e895]: v1
+                - paragraph [ref=e896]: Passport/ID and Address Proof are required for all clients.
+                - generic [ref=e897]:
+                  - generic [ref=e898]: "ID: rule-kyc-mandatory"
+                  - generic [ref=e899]: "Priority: 1000"
+                  - generic [ref=e900]: "Policy: POL-KYC-2026-001"
+                  - generic [ref=e901]: "Conditions: 0 (AND)"
+                  - generic [ref=e902]: "Actions: 2"
+              - generic [ref=e903]:
+                - button "Edit" [ref=e904] [cursor=pointer]
+                - button "Clone" [ref=e905] [cursor=pointer]
+                - button "Delete" [ref=e906] [cursor=pointer]
+            - generic [ref=e909]:
+              - generic [ref=e910]:
+                - generic [ref=e911]:
+                  - heading "Tax Residency Mandatory" [level=3] [ref=e912]
+                  - generic [ref=e913]: Published
+                  - generic [ref=e914]: v1
+                - paragraph [ref=e915]: Tax residency documentation is required for CRS/FATCA compliance.
+                - generic [ref=e916]:
+                  - generic [ref=e917]: "ID: rule-tax-mandatory"
+                  - generic [ref=e918]: "Priority: 1000"
+                  - generic [ref=e919]: "Policy: POL-TAX-2026-001"
+                  - generic [ref=e920]: "Conditions: 0 (AND)"
+                  - generic [ref=e921]: "Actions: 1"
+              - generic [ref=e922]:
+                - button "Edit" [ref=e923] [cursor=pointer]
+                - button "Clone" [ref=e924] [cursor=pointer]
+                - button "Delete" [ref=e925] [cursor=pointer]
+            - generic [ref=e928]:
+              - generic [ref=e929]:
+                - generic [ref=e930]:
+                  - heading "SoW Declaration Mandatory" [level=3] [ref=e931]
+                  - generic [ref=e932]: Published
+                  - generic [ref=e933]: v1
+                - paragraph [ref=e934]: Source of Wealth declaration is required for all onboarding clients.
+                - generic [ref=e935]:
+                  - generic [ref=e936]: "ID: rule-sow-mandatory"
+                  - generic [ref=e937]: "Priority: 1000"
+                  - generic [ref=e938]: "Policy: POL-SOW-2026-001"
+                  - generic [ref=e939]: "Conditions: 0 (AND)"
+                  - generic [ref=e940]: "Actions: 1"
+              - generic [ref=e941]:
+                - button "Edit" [ref=e942] [cursor=pointer]
+                - button "Clone" [ref=e943] [cursor=pointer]
+                - button "Delete" [ref=e944] [cursor=pointer]
+            - generic [ref=e947]:
+              - generic [ref=e948]:
+                - generic [ref=e949]:
+                  - heading "Bank Statements for SoF" [level=3] [ref=e950]
+                  - generic [ref=e951]: Published
+                  - generic [ref=e952]: v1
+                - paragraph [ref=e953]: Bank statements are required to evidence Source of Funds.
+                - generic [ref=e954]:
+                  - generic [ref=e955]: "ID: rule-bank-mandatory"
+                  - generic [ref=e956]: "Priority: 1000"
+                  - generic [ref=e957]: "Policy: POL-SOF-2026-001"
+                  - generic [ref=e958]: "Conditions: 0 (AND)"
+                  - generic [ref=e959]: "Actions: 1"
+              - generic [ref=e960]:
+                - button "Edit" [ref=e961] [cursor=pointer]
+                - button "Clone" [ref=e962] [cursor=pointer]
+                - button "Delete" [ref=e963] [cursor=pointer]
+            - generic [ref=e966]:
+              - generic [ref=e967]:
+                - generic [ref=e968]:
+                  - heading "Business Owner Extended Docs" [level=3] [ref=e969]
+                  - generic [ref=e970]: Published
+                  - generic [ref=e971]: v1
+                - paragraph [ref=e972]: Business owners require additional corporate documentation.
+                - generic [ref=e973]:
+                  - generic [ref=e974]: "ID: rule-bo-docs"
+                  - generic [ref=e975]: "Priority: 900"
+                  - generic [ref=e976]: "Policy: POL-BO-2026-001"
+                  - generic [ref=e977]: "Conditions: 0 (AND)"
+                  - generic [ref=e978]: "Actions: 4"
+              - generic [ref=e979]:
+                - button "Edit" [ref=e980] [cursor=pointer]
+                - button "Clone" [ref=e981] [cursor=pointer]
+                - button "Delete" [ref=e982] [cursor=pointer]
+            - generic [ref=e985]:
+              - generic [ref=e986]:
+                - generic [ref=e987]:
+                  - heading "Salaried Employee Docs" [level=3] [ref=e988]
+                  - generic [ref=e989]: Published
+                  - generic [ref=e990]: v1
+                - paragraph [ref=e991]: Salaried employees require employment evidence.
+                - generic [ref=e992]:
+                  - generic [ref=e993]: "ID: rule-emp-docs"
+                  - generic [ref=e994]: "Priority: 900"
+                  - generic [ref=e995]: "Policy: POL-EMP-2026-001"
+                  - generic [ref=e996]: "Conditions: 0 (AND)"
+                  - generic [ref=e997]: "Actions: 2"
+              - generic [ref=e998]:
+                - button "Edit" [ref=e999] [cursor=pointer]
+                - button "Clone" [ref=e1000] [cursor=pointer]
+                - button "Delete" [ref=e1001] [cursor=pointer]
+            - generic [ref=e1004]:
+              - generic [ref=e1005]:
+                - generic [ref=e1006]:
+                  - heading "Investor Portfolio Docs" [level=3] [ref=e1007]
+                  - generic [ref=e1008]: Published
+                  - generic [ref=e1009]: v1
+                - paragraph [ref=e1010]: Investors require portfolio and trading evidence.
+                - generic [ref=e1011]:
+                  - generic [ref=e1012]: "ID: rule-inv-docs"
+                  - generic [ref=e1013]: "Priority: 900"
+                  - generic [ref=e1014]: "Policy: POL-INV-2026-001"
+                  - generic [ref=e1015]: "Conditions: 0 (AND)"
+                  - generic [ref=e1016]: "Actions: 2"
+              - generic [ref=e1017]:
+                - button "Edit" [ref=e1018] [cursor=pointer]
+                - button "Clone" [ref=e1019] [cursor=pointer]
+                - button "Delete" [ref=e1020] [cursor=pointer]
+            - generic [ref=e1023]:
+              - generic [ref=e1024]:
+                - generic [ref=e1025]:
+                  - heading "US Person FATCA Requirements" [level=3] [ref=e1026]
+                  - generic [ref=e1027]: Published
+                  - generic [ref=e1028]: v1
+                - paragraph [ref=e1029]: US persons require additional FATCA documentation.
+                - generic [ref=e1030]:
+                  - generic [ref=e1031]: "ID: rule-us-person-fatca"
+                  - generic [ref=e1032]: "Priority: 850"
+                  - generic [ref=e1033]: "Policy: POL-FATCA-2026-001"
+                  - generic [ref=e1034]: "Conditions: 0 (AND)"
+                  - generic [ref=e1035]: "Actions: 3"
+              - generic [ref=e1036]:
+                - button "Edit" [ref=e1037] [cursor=pointer]
+                - button "Clone" [ref=e1038] [cursor=pointer]
+                - button "Delete" [ref=e1039] [cursor=pointer]
+            - generic [ref=e1042]:
+              - generic [ref=e1043]:
+                - generic [ref=e1044]:
+                  - heading "HNW Enhanced Due Diligence" [level=3] [ref=e1045]
+                  - generic [ref=e1046]: Published
+                  - generic [ref=e1047]: v1
+                - paragraph [ref=e1048]: High net worth clients require enhanced KYC checks.
+                - generic [ref=e1049]:
+                  - generic [ref=e1050]: "ID: rule-hnw-enhanced"
+                  - generic [ref=e1051]: "Priority: 800"
+                  - generic [ref=e1052]: "Policy: POL-EDD-2026-001"
+                  - generic [ref=e1053]: "Conditions: 0 (AND)"
+                  - generic [ref=e1054]: "Actions: 2"
+              - generic [ref=e1055]:
+                - button "Edit" [ref=e1056] [cursor=pointer]
+                - button "Clone" [ref=e1057] [cursor=pointer]
+                - button "Delete" [ref=e1058] [cursor=pointer]
+            - generic [ref=e1061]:
+              - generic [ref=e1062]:
+                - generic [ref=e1063]:
+                  - heading "High/Critical Risk Elevation" [level=3] [ref=e1064]
+                  - generic [ref=e1065]: Published
+                  - generic [ref=e1066]: v1
+                - paragraph [ref=e1067]: Any high or critical AI risk finding elevates case risk level.
+                - generic [ref=e1068]:
+                  - generic [ref=e1069]: "ID: rule-risk-high"
+                  - generic [ref=e1070]: "Priority: 500"
+                  - generic [ref=e1071]: "Policy: POL-RISK-2026-001"
+                  - generic [ref=e1072]: "Conditions: 0 (AND)"
+                  - generic [ref=e1073]: "Actions: 1"
+              - generic [ref=e1074]:
+                - button "Edit" [ref=e1075] [cursor=pointer]
+                - button "Clone" [ref=e1076] [cursor=pointer]
+                - button "Delete" [ref=e1077] [cursor=pointer]
+            - generic [ref=e1080]:
+              - generic [ref=e1081]:
+                - generic [ref=e1082]:
+                  - heading "AI Mismatch Readiness Penalty" [level=3] [ref=e1083]
+                  - generic [ref=e1084]: Published
+                  - generic [ref=e1085]: v1
+                - paragraph [ref=e1086]: Detected mismatches between declared and extracted values reduce readiness.
+                - generic [ref=e1087]:
+                  - generic [ref=e1088]: "ID: rule-mismatch-penalty"
+                  - generic [ref=e1089]: "Priority: 450"
+                  - generic [ref=e1090]: "Policy: POL-MIS-2026-001"
+                  - generic [ref=e1091]: "Conditions: 0 (AND)"
+                  - generic [ref=e1092]: "Actions: 1"
+              - generic [ref=e1093]:
+                - button "Edit" [ref=e1094] [cursor=pointer]
+                - button "Clone" [ref=e1095] [cursor=pointer]
+                - button "Delete" [ref=e1096] [cursor=pointer]
+            - generic [ref=e1099]:
+              - generic [ref=e1100]:
+                - generic [ref=e1101]:
+                  - heading "Missing Documents Readiness Penalty" [level=3] [ref=e1102]
+                  - generic [ref=e1103]: Published
+                  - generic [ref=e1104]: v1
+                - paragraph [ref=e1105]: Incomplete documents reduce readiness score.
+                - generic [ref=e1106]:
+                  - generic [ref=e1107]: "ID: rule-missing-docs-penalty"
+                  - generic [ref=e1108]: "Priority: 400"
+                  - generic [ref=e1109]: "Policy: POL-READ-2026-001"
+                  - generic [ref=e1110]: "Conditions: 0 (AND)"
+                  - generic [ref=e1111]: "Actions: 1"
+              - generic [ref=e1112]:
+                - button "Edit" [ref=e1113] [cursor=pointer]
+                - button "Clone" [ref=e1114] [cursor=pointer]
+                - button "Delete" [ref=e1115] [cursor=pointer]

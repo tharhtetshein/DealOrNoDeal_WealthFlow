@@ -1,0 +1,32 @@
+- generic [ref=e172]:
+  - main [ref=e173]:
+    - button "Back" [ref=e175] [cursor=pointer]:
+      - img [ref=e176]
+      - text: Back
+    - generic [ref=e178]:
+      - paragraph [ref=e179]: Access Control
+      - heading "Select your workspace role" [level=1] [ref=e180]
+      - paragraph [ref=e181]: Configure your dashboard environment and toolset based on your professional responsibilities within the Private Vault.
+    - generic [ref=e182]:
+      - generic [ref=e183] [cursor=pointer]:
+        - img [ref=e186]
+        - heading "Relationship Manager" [level=3] [ref=e189]
+        - paragraph [ref=e190]: Manage high-net-worth portfolios, client communications, and strategic wealth planning tools.
+      - generic [ref=e196] [cursor=pointer]:
+        - img [ref=e198]
+        - heading "Onboarding Ops" [level=3] [ref=e200]
+        - paragraph [ref=e201]: Coordinate new account sequences, document verification, and initial client integration flows.
+      - generic [ref=e202] [cursor=pointer]:
+        - generic [ref=e215]: Active Choice
+        - img [ref=e204]
+        - heading "Compliance Reviewer" [level=3] [ref=e207]
+        - paragraph [ref=e208]: Audit account activity, perform KYC/AML checks, and authorize high-value transactions.
+        - generic [ref=e216]:
+          - img [ref=e217]
+          - generic [ref=e220]: Currently Selected
+    - button "Continue to Workspace" [ref=e209] [cursor=pointer]:
+      - text: Continue to Workspace
+      - img [ref=e210]
+    - paragraph [ref=e212]: Administrator authorization may be required for specific role transitions.
+  - contentinfo [ref=e213]:
+    - paragraph [ref=e214]: System v4.2.0

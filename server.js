@@ -7,6 +7,7 @@ import { Groq } from 'groq-sdk'
 import fs from 'fs'
 import path from 'path'
 import Tesseract from 'tesseract.js'
+import { evaluateRules, getDefaultRules, normalizeRule, validateRule } from './src/lib/ruleEngine.js'
 
 dotenv.config()
 
@@ -821,6 +822,41 @@ app.post('/api/check-compliance-status', (req, res) => {
       error: 'Failed to check compliance status',
       details: error.message 
     })
+  }
+})
+
+app.post('/api/rules/evaluate', (req, res) => {
+  try {
+    const { caseFile, rules, baselineRisk = 'Low', baselineReadiness = 0 } = req.body || {}
+    if (!caseFile) {
+      res.status(400).json({ error: 'caseFile is required' })
+      return
+    }
+
+    const activeRules = Array.isArray(rules) && rules.length > 0
+      ? rules.map(normalizeRule)
+      : getDefaultRules()
+
+    const evaluation = evaluateRules(caseFile, activeRules, {
+      baselineRisk,
+      baselineReadiness,
+    })
+
+    res.json({ success: true, evaluation })
+  } catch (error) {
+    console.error('Error evaluating rules:', error)
+    res.status(500).json({ error: 'Failed to evaluate rules', details: error.message })
+  }
+})
+
+app.post('/api/rules/validate', (req, res) => {
+  try {
+    const rule = normalizeRule(req.body?.rule || req.body || {})
+    const validation = validateRule(rule)
+    res.status(validation.valid ? 200 : 400).json({ success: validation.valid, validation, rule })
+  } catch (error) {
+    console.error('Error validating rule:', error)
+    res.status(500).json({ error: 'Failed to validate rule', details: error.message })
   }
 })
 

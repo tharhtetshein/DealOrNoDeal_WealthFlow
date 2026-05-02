@@ -1,0 +1,80 @@
+- generic [ref=e807]:
+  - complementary [ref=e808]:
+    - button "WEALTHFLOW Crimson Reserve" [ref=e809] [cursor=pointer]:
+      - generic [ref=e810]:
+        - img [ref=e812]
+        - generic [ref=e816]:
+          - heading "WEALTHFLOW" [level=1] [ref=e817]
+          - paragraph [ref=e818]: Crimson Reserve
+    - navigation [ref=e819]:
+      - button "Dashboard" [ref=e820] [cursor=pointer]:
+        - img [ref=e821]
+        - text: Dashboard
+      - button "Case Files" [ref=e826] [cursor=pointer]:
+        - img [ref=e827]
+        - text: Case Files
+      - button "Documents" [ref=e829] [cursor=pointer]:
+        - img [ref=e830]
+        - text: Documents
+      - button "System Audit Log" [ref=e833] [cursor=pointer]:
+        - img [ref=e834]
+        - text: System Audit Log
+      - button "Rule Admin" [ref=e837] [cursor=pointer]:
+        - img [ref=e838]
+        - text: Rule Admin
+    - button "Sign Out" [ref=e845] [cursor=pointer]:
+      - img [ref=e846]
+      - text: Sign Out
+  - generic [ref=e849]:
+    - banner [ref=e850]:
+      - generic [ref=e851]:
+        - heading "WealthFlow SoW" [level=1] [ref=e854]
+        - generic [ref=e855]:
+          - generic [ref=e856]:
+            - img [ref=e857]
+            - textbox "Search cases, clients..." [ref=e860]
+          - button [ref=e861] [cursor=pointer]:
+            - img [ref=e862]
+          - generic [ref=e868]: JS
+    - main [ref=e869]:
+      - generic [ref=e871]:
+        - generic [ref=e872]:
+          - generic [ref=e873]:
+            - heading "Rule Engine Admin" [level=1] [ref=e874]
+            - paragraph [ref=e875]: Manage compliance rules, test policies, and review evaluation history
+          - generic [ref=e876]:
+            - button "Back" [ref=e877] [cursor=pointer]
+            - button "New Rule" [ref=e878] [cursor=pointer]
+            - button "Reset Defaults" [ref=e879] [cursor=pointer]
+        - generic [ref=e880]:
+          - button "Rules" [ref=e881] [cursor=pointer]
+          - button "Editor" [ref=e882] [cursor=pointer]
+          - button "Sandbox" [active] [ref=e883] [cursor=pointer]
+        - generic [ref=e1134]:
+          - generic [ref=e1135]:
+            - heading "Rule Sandbox" [level=3] [ref=e1136]
+            - paragraph [ref=e1137]: Test a rule against a real case to preview evaluation results
+          - generic [ref=e1138]:
+            - generic [ref=e1139]:
+              - generic [ref=e1140]:
+                - text: Select Rule
+                - combobox [ref=e1141]:
+                  - option "-- Choose a rule --"
+                  - option "KYC Documents Mandatory (Published, v1)" [selected]
+                  - option "Tax Residency Mandatory (Published, v1)"
+                  - option "SoW Declaration Mandatory (Published, v1)"
+                  - option "Bank Statements for SoF (Published, v1)"
+                  - option "Business Owner Extended Docs (Published, v1)"
+                  - option "Salaried Employee Docs (Published, v1)"
+                  - option "Investor Portfolio Docs (Published, v1)"
+                  - option "US Person FATCA Requirements (Published, v1)"
+                  - option "HNW Enhanced Due Diligence (Published, v1)"
+                  - option "High/Critical Risk Elevation (Published, v1)"
+                  - option "AI Mismatch Readiness Penalty (Published, v1)"
+                  - option "Missing Documents Readiness Penalty (Published, v1)"
+              - generic [ref=e1142]:
+                - text: Select Case
+                - combobox [ref=e1143]:
+                  - option "-- Choose a case --"
+                  - option "Test Rule Client (WF-20260)" [selected]
+            - button "Run Evaluation" [ref=e1144] [cursor=pointer]

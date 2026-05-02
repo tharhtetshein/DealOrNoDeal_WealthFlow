@@ -1,0 +1,54 @@
+- generic [ref=e725]:
+  - complementary [ref=e726]:
+    - button "WEALTHFLOW Crimson Reserve" [ref=e727] [cursor=pointer]:
+      - generic [ref=e728]:
+        - img [ref=e730]
+        - generic [ref=e734]:
+          - heading "WEALTHFLOW" [level=1] [ref=e735]
+          - paragraph [ref=e736]: Crimson Reserve
+    - navigation [ref=e737]:
+      - button "Dashboard" [ref=e738] [cursor=pointer]:
+        - img [ref=e739]
+        - text: Dashboard
+      - button "Case Files" [ref=e744] [cursor=pointer]:
+        - img [ref=e745]
+        - text: Case Files
+      - button "Documents" [ref=e747] [cursor=pointer]:
+        - img [ref=e748]
+        - text: Documents
+      - button "System Audit Log" [ref=e751] [cursor=pointer]:
+        - img [ref=e752]
+        - text: System Audit Log
+      - button "Rule Admin" [ref=e755] [cursor=pointer]:
+        - img [ref=e756]
+        - text: Rule Admin
+    - button "Sign Out" [ref=e763] [cursor=pointer]:
+      - img [ref=e764]
+      - text: Sign Out
+  - generic [ref=e767]:
+    - banner [ref=e768]:
+      - generic [ref=e769]:
+        - heading "WealthFlow SoW" [level=1] [ref=e772]
+        - generic [ref=e773]:
+          - generic [ref=e774]:
+            - img [ref=e775]
+            - textbox "Search cases, clients..." [ref=e778]
+          - button [ref=e779] [cursor=pointer]:
+            - img [ref=e780]
+          - generic [ref=e786]: JS
+    - main [ref=e787]:
+      - generic [ref=e788]:
+        - generic [ref=e789]:
+          - generic [ref=e790]:
+            - heading "Case Files" [level=1] [ref=e791]
+            - paragraph [ref=e792]: Draft first, upload documents progressively, then submit when complete.
+          - button "New Case File" [ref=e793] [cursor=pointer]:
+            - img [ref=e794]
+            - text: New Case File
+        - generic [ref=e795]:
+          - img [ref=e797]
+          - heading "No Case Files Yet" [level=3] [ref=e798]
+          - paragraph [ref=e799]: Create a case first as Draft. Upload documents later from the Documents screen.
+          - button "Create New Case" [ref=e800] [cursor=pointer]:
+            - img [ref=e801]
+            - text: Create New Case
