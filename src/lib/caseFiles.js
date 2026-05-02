@@ -1453,3 +1453,213 @@ export async function submitComplianceDecision(caseId, decision, payload = {}) {
 export function isFirebaseEnabled() {
   return hasFirebaseConfig
 }
+
+// Document Review Actions for Compliance
+export async function reviewDocument(caseId, documentId, reviewAction, comment = '') {
+  const validActions = ['accept', 'needs_clarification', 'reject', 'comment']
+  if (!validActions.includes(reviewAction)) {
+    return { ok: false, reason: 'Invalid review action' }
+  }
+
+  const isCommentOnly = reviewAction === 'comment'
+  const reviewEntry = {
+    id: `doc-review-${Date.now()}`,
+    documentId,
+    action: reviewAction,
+    comment: String(comment || '').trim(),
+    reviewedBy: 'Compliance Officer',
+    reviewedAt: new Date().toISOString(),
+  }
+
+  return withStorageFallback(
+    async () => {
+      const existing = normalizeCaseFile(await getFirebaseCaseFile(caseId))
+      if (!existing) return { ok: false, reason: 'Case not found' }
+
+      const documentReviews = [...(existing.documentReviews || []), reviewEntry]
+      const documents = (existing.documents || []).map((doc) => {
+        if (doc.id !== documentId) return doc
+        if (isCommentOnly) {
+          return { ...doc, reviewComment: comment }
+        }
+        return { ...doc, reviewStatus: reviewAction, reviewComment: comment }
+      })
+
+      await updateFirebaseCaseFile(caseId, {
+        documentReviews,
+        documents,
+        updatedAt: new Date().toISOString(),
+      })
+
+      const updated = normalizeCaseFile(await getFirebaseCaseFile(caseId))
+      if (updated) upsertLocalCaseFile(updated)
+      return { ok: true, caseFile: updated, review: reviewEntry }
+    },
+    async () => {
+      const existing = getLocalCaseFileById(caseId)
+      if (!existing) return { ok: false, reason: 'Case not found' }
+
+      const documents = (existing.documents || []).map((doc) => {
+        if (doc.id !== documentId) return doc
+        if (isCommentOnly) {
+          return { ...doc, reviewComment: comment }
+        }
+        return { ...doc, reviewStatus: reviewAction, reviewComment: comment }
+      })
+
+      const updated = upsertLocalCaseFile({
+        ...existing,
+        documentReviews: [...(existing.documentReviews || []), reviewEntry],
+        documents,
+        updatedAt: new Date().toISOString(),
+      })
+
+      return { ok: true, caseFile: updated, review: reviewEntry }
+    },
+  )
+}
+
+// Compliance Checklist Management
+export const COMPLIANCE_CHECKLIST_ITEMS = [
+  { key: 'identity_verified', label: 'Identity verified', category: 'KYC' },
+  { key: 'address_proof_checked', label: 'Address proof checked', category: 'KYC' },
+  { key: 'tax_residency_checked', label: 'Tax residency checked', category: 'Tax' },
+  { key: 'sow_reviewed', label: 'Source of Wealth reviewed', category: 'SoW' },
+  { key: 'bank_statements_reviewed', label: 'Bank statements reviewed', category: 'SoF' },
+  { key: 'ai_risks_reviewed', label: 'AI risks reviewed', category: 'Risk' },
+  { key: 'mismatches_resolved', label: 'Mismatches resolved', category: 'Risk' },
+]
+
+export async function updateComplianceChecklist(caseId, checklistUpdates) {
+  return withStorageFallback(
+    async () => {
+      const existing = normalizeCaseFile(await getFirebaseCaseFile(caseId))
+      if (!existing) return { ok: false, reason: 'Case not found' }
+
+      const currentChecklist = existing.complianceChecklist || {}
+      const updatedChecklist = { ...currentChecklist }
+
+      Object.entries(checklistUpdates).forEach(([key, value]) => {
+        if (value.checked !== undefined) {
+          updatedChecklist[key] = {
+            checked: value.checked,
+            checkedAt: value.checked ? new Date().toISOString() : null,
+            checkedBy: value.checked ? 'Compliance Officer' : null,
+            note: value.note || '',
+          }
+        }
+      })
+
+      await updateFirebaseCaseFile(caseId, {
+        complianceChecklist: updatedChecklist,
+        updatedAt: new Date().toISOString(),
+      })
+
+      const updated = normalizeCaseFile(await getFirebaseCaseFile(caseId))
+      if (updated) upsertLocalCaseFile(updated)
+      return { ok: true, caseFile: updated, checklist: updatedChecklist }
+    },
+    async () => {
+      const existing = getLocalCaseFileById(caseId)
+      if (!existing) return { ok: false, reason: 'Case not found' }
+
+      const currentChecklist = existing.complianceChecklist || {}
+      const updatedChecklist = { ...currentChecklist }
+
+      Object.entries(checklistUpdates).forEach(([key, value]) => {
+        if (value.checked !== undefined) {
+          updatedChecklist[key] = {
+            checked: value.checked,
+            checkedAt: value.checked ? new Date().toISOString() : null,
+            checkedBy: value.checked ? 'Compliance Officer' : null,
+            note: value.note || '',
+          }
+        }
+      })
+
+      const updated = upsertLocalCaseFile({
+        ...existing,
+        complianceChecklist: updatedChecklist,
+        updatedAt: new Date().toISOString(),
+      })
+
+      return { ok: true, caseFile: updated, checklist: updatedChecklist }
+    },
+  )
+}
+
+export function getComplianceChecklistStatus(caseFile) {
+  const checklist = caseFile?.complianceChecklist || {}
+  const total = COMPLIANCE_CHECKLIST_ITEMS.length
+  const completed = COMPLIANCE_CHECKLIST_ITEMS.filter((item) => checklist[item.key]?.checked).length
+  const allComplete = completed === total
+
+  return {
+    total,
+    completed,
+    allComplete,
+    items: COMPLIANCE_CHECKLIST_ITEMS.map((item) => ({
+      ...item,
+      ...checklist[item.key],
+    })),
+  }
+}
+
+// AI Risk Status Management
+export async function updateRiskStatus(caseId, riskId, status, note = '') {
+  const validStatuses = ['accepted', 'false_positive', 'needs_followup', 'escalated']
+  if (!validStatuses.includes(status)) {
+    return { ok: false, reason: 'Invalid risk status' }
+  }
+
+  return withStorageFallback(
+    async () => {
+      const existing = normalizeCaseFile(await getFirebaseCaseFile(caseId))
+      if (!existing) return { ok: false, reason: 'Case not found' }
+
+      const riskStatuses = {
+        ...(existing.riskStatuses || {}),
+        [riskId]: {
+          status,
+          note: String(note || '').trim(),
+          updatedAt: new Date().toISOString(),
+          updatedBy: 'Compliance Officer',
+        },
+      }
+
+      await updateFirebaseCaseFile(caseId, {
+        riskStatuses,
+        updatedAt: new Date().toISOString(),
+      })
+
+      const updated = normalizeCaseFile(await getFirebaseCaseFile(caseId))
+      if (updated) upsertLocalCaseFile(updated)
+      return { ok: true, caseFile: updated, riskStatuses }
+    },
+    async () => {
+      const existing = getLocalCaseFileById(caseId)
+      if (!existing) return { ok: false, reason: 'Case not found' }
+
+      const updated = upsertLocalCaseFile({
+        ...existing,
+        riskStatuses: {
+          ...(existing.riskStatuses || {}),
+          [riskId]: {
+            status,
+            note: String(note || '').trim(),
+            updatedAt: new Date().toISOString(),
+            updatedBy: 'Compliance Officer',
+          },
+        },
+        updatedAt: new Date().toISOString(),
+      })
+
+      return { ok: true, caseFile: updated, riskStatuses: updated.riskStatuses }
+    },
+  )
+}
+
+export function getDocumentReviewStatus(caseFile, documentId) {
+  const doc = caseFile?.documents?.find((d) => d.id === documentId)
+  return doc?.reviewStatus || null
+}

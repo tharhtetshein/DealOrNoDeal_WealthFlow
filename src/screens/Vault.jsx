@@ -8,6 +8,7 @@ import {
   Loader2,
   Send,
   Trash2,
+  TestTube2,
 } from 'lucide-react'
 import {
   addDocumentToCase,
@@ -179,6 +180,39 @@ export default function Vault({ onNavigate }) {
     setMessage('Document removed. Completeness and case status updated.')
   }
 
+  // Test utility: Mock all required documents
+  const handleMockAllDocuments = async () => {
+    if (!activeCase) return
+
+    setUploading(true)
+    setMessage('Mocking all required documents...')
+
+    const missingEntries = checklistSummary.entries?.filter((entry) => entry.required && entry.state !== 'complete') || []
+
+    for (const entry of missingEntries) {
+      const missingItems = entry.missingItems || [entry.label]
+      for (const item of missingItems) {
+        const documentId = `mock-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
+        await addDocumentToCase(activeCase.id, {
+          id: documentId,
+          name: `Mock_${item.replace(/\s+/g, '_')}.pdf`,
+          size: '1.2 MB',
+          category: item,
+          uploader: 'Test Upload',
+          extractedText: `Mock extracted text for ${item}. This is a test document for compliance review workflow testing.`,
+          mimeType: 'application/pdf',
+          storagePath: null,
+          downloadURL: null,
+          uploadedAt: new Date().toISOString(),
+        })
+      }
+    }
+
+    await refreshActiveCase()
+    setUploading(false)
+    setMessage(`Mocked ${missingEntries.length} required document categories. Ready for testing compliance review.`)
+  }
+
   if (loadingCase) {
     return (
       <div className="min-h-screen bg-surface p-8">
@@ -233,6 +267,16 @@ export default function Vault({ onNavigate }) {
               <div className="h-full bg-primary rounded-full" style={{ width: `${completeness}%` }} />
             </div>
           </div>
+
+          <button
+            onClick={handleMockAllDocuments}
+            disabled={uploading || checklistSummary.allRequiredComplete}
+            className="px-4 py-3 rounded-xl bg-tertiary/10 text-tertiary text-sm font-medium hover:bg-tertiary/20 transition-colors inline-flex items-center gap-2 border border-tertiary/20 disabled:opacity-50 disabled:cursor-not-allowed"
+            title="Test utility: Add mock documents for all required categories"
+          >
+            <TestTube2 className="w-4 h-4" />
+            {uploading ? 'Mocking...' : 'Mock All Documents'}
+          </button>
         </div>
       </div>
 

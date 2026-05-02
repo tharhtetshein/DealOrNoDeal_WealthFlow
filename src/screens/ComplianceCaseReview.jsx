@@ -3,12 +3,17 @@ import {
   AlertTriangle,
   ArrowLeft,
   CheckCircle2,
+  CheckSquare,
+  Circle,
   Eye,
   FileText,
   MessageCircle,
+  MessageSquare,
   Send,
   ShieldAlert,
   ShieldCheck,
+  ThumbsDown,
+  ThumbsUp,
   XCircle,
 } from 'lucide-react'
 import {
@@ -16,10 +21,14 @@ import {
   CASE_STATUS,
   getActiveCaseId,
   getCaseFileById,
+  getComplianceChecklistStatus,
   getDocumentCompletionSummary,
   getReadinessScore,
+  reviewDocument,
   submitComplianceDecision,
   updateCaseData,
+  updateComplianceChecklist,
+  COMPLIANCE_CHECKLIST_ITEMS,
 } from '../lib/caseFiles'
 
 function formatDateTime(value) {
@@ -92,7 +101,29 @@ function getRiskFlags(caseFile, completion) {
     description: item.missingReason || 'Required document is not uploaded.',
   }))
 
-  return [...missingDocs, ...aiRisks, ...mismatches]
+  // Add readiness-based flags to explain Medium risk when readiness < 100
+  const readinessFlags = []
+  if (!completion?.allRequiredComplete) {
+    const incompleteCount = completion?.entries?.filter((e) => e.required && e.state !== 'complete').length || 0
+    readinessFlags.push({
+      id: 'readiness-documents',
+      title: 'Document Completeness',
+      severity: 'Medium',
+      description: incompleteCount > 0
+        ? `${incompleteCount} required document categories are incomplete.`
+        : 'Required documents are not fully complete.',
+    })
+  }
+  if (caseFile?.status === CASE_STATUS.ACTION_REQUIRED) {
+    readinessFlags.push({
+      id: 'readiness-action-required',
+      title: 'Action Required from RM',
+      severity: 'Medium',
+      description: 'Compliance previously requested more information. Awaiting RM response.',
+    })
+  }
+
+  return [...missingDocs, ...aiRisks, ...mismatches, ...readinessFlags]
 }
 
 function getSourceOfWealth(caseFile) {
@@ -122,23 +153,76 @@ export default function ComplianceCaseReview({ onNavigate }) {
   const [decisionNote, setDecisionNote] = useState('')
   const [message, setMessage] = useState('')
   const [loading, setLoading] = useState(true)
+  const [checklist, setChecklist] = useState(null)
+  const [documentCommentModal, setDocumentCommentModal] = useState(null)
+  const [documentCommentText, setDocumentCommentText] = useState('')
+  const [attemptedSubmit, setAttemptedSubmit] = useState(false)
 
   const loadCase = async () => {
     setLoading(true)
     const caseId = getActiveCaseId()
     let nextCase = caseId ? await getCaseFileById(caseId) : null
     if (nextCase?.status === CASE_STATUS.PENDING_REVIEW) {
-      nextCase = await updateCaseData(nextCase.id, {
+      const result = await updateCaseData(nextCase.id, {
         status: CASE_STATUS.UNDER_REVIEW,
         assignedComplianceOfficer: 'Compliance Officer',
         reviewStartedAt: nextCase.reviewStartedAt || new Date().toISOString(),
       })
+      if (result) {
+        nextCase = result
+        setMessage(`Case auto-transitioned to Under Review. Status: ${result.status}`)
+      } else {
+        setMessage(`Failed to transition case status from Pending Review`)
+      }
     }
     const nextReadiness = caseId ? await getReadinessScore(caseId) : null
     setCaseFile(nextCase)
     setReadiness(nextReadiness)
     setCompletion(nextCase ? getDocumentCompletionSummary(nextCase) : null)
+    setChecklist(nextCase ? getComplianceChecklistStatus(nextCase) : null)
     setLoading(false)
+  }
+
+  const handleDocumentReview = async (documentId, action) => {
+    if (!caseFile) return
+    if (action === 'needs_clarification' || action === 'reject') {
+      setDocumentCommentModal({ documentId, action })
+      return
+    }
+    const result = await reviewDocument(caseFile.id, documentId, action)
+    if (!result.ok) {
+      setMessage(result.reason)
+      return
+    }
+    setMessage(`Document marked as ${action.replace('_', ' ')}.`)
+    await loadCase()
+  }
+
+  const handleDocumentReviewWithComment = async () => {
+    if (!caseFile || !documentCommentModal) return
+    const { documentId, action } = documentCommentModal
+    const result = await reviewDocument(caseFile.id, documentId, action, documentCommentText)
+    if (!result.ok) {
+      setMessage(result.reason)
+      return
+    }
+    setDocumentCommentModal(null)
+    setDocumentCommentText('')
+    setMessage(`Document marked as ${action.replace('_', ' ')}.`)
+    await loadCase()
+  }
+
+  const handleChecklistToggle = async (key, checked) => {
+    if (!caseFile) return
+    const result = await updateComplianceChecklist(caseFile.id, {
+      [key]: { checked },
+    })
+    if (!result.ok) {
+      setMessage(result.reason)
+      return
+    }
+    setChecklist(getComplianceChecklistStatus(result.caseFile))
+    setMessage('Checklist updated.')
   }
 
   useEffect(() => {
@@ -148,7 +232,9 @@ export default function ComplianceCaseReview({ onNavigate }) {
   const readinessScore = readiness?.percentage ?? 0
   const riskLevel = useMemo(() => getRiskLevel(caseFile, readinessScore), [caseFile, readinessScore])
   const riskFlags = useMemo(() => getRiskFlags(caseFile, completion || { missingRequiredDocuments: [] }), [caseFile, completion])
-  const approveDisabled = !completion?.allRequiredComplete || riskFlags.some((flag) => /high|critical/i.test(String(flag.severity || '')))
+  const decisionNoteMissing = !String(decisionNote || '').trim()
+  const approveDisabled = !completion?.allRequiredComplete || riskFlags.some((flag) => /high|critical/i.test(String(flag.severity || ''))) || !checklist?.allComplete || decisionNoteMissing
+  const anyDecisionDisabled = decisionNoteMissing
   const comments = [...(caseFile?.comments || [])].sort((a, b) => new Date(b.createdAt || 0) - new Date(a.createdAt || 0))
 
   const handleAddComment = async () => {
@@ -168,11 +254,21 @@ export default function ComplianceCaseReview({ onNavigate }) {
 
   const handleDecision = async (decision) => {
     if (!caseFile) return
+    const trimmedNote = String(decisionNote || '').trim()
+    if (!trimmedNote) {
+      setAttemptedSubmit(true)
+      setMessage('Decision note is required before submitting.')
+      return
+    }
+    setAttemptedSubmit(false)
+    // Debug current status
+    console.log('Submitting decision:', decision, 'Current status:', caseFile.status)
     const result = await submitComplianceDecision(caseFile.id, decision, {
-      note: decisionNote,
+      note: trimmedNote,
     })
+    console.log('Decision result:', result)
     if (!result.ok) {
-      setMessage(result.reason)
+      setMessage(`Approval failed: ${result.reason}`)
       return
     }
     setDecisionNote('')
@@ -312,40 +408,142 @@ export default function ComplianceCaseReview({ onNavigate }) {
                 {(completion?.requiredDocuments || []).map((item) => {
                   const validation = getDocumentValidation(item)
                   const firstDoc = item.documents?.[0] || null
+                  const docReviewStatus = firstDoc?.reviewStatus
                   return (
                     <div key={item.label} className="rounded-2xl border border-outline/10 bg-surface p-4">
                       <div className="flex flex-wrap items-start justify-between gap-3">
                         <div>
                           <p className="font-semibold text-on-surface">{item.label}</p>
                           <p className="mt-1 text-xs text-on-surface-variant">{item.category}</p>
+                          {firstDoc?.reviewComment && (
+                            <p className="mt-1 text-xs text-on-surface-variant italic">"{firstDoc.reviewComment}"</p>
+                          )}
                         </div>
                         <div className="flex flex-wrap gap-2">
                           <span className={`rounded-full px-2.5 py-1 text-xs font-semibold ${docStatusTone(item.status)}`}>
                             {item.status === 'uploaded' ? 'Uploaded' : item.status === 'needs_review' ? 'In Review' : 'Missing'}
                           </span>
                           <span className={`rounded-full px-2.5 py-1 text-xs font-semibold ${validation.tone}`}>{validation.label}</span>
+                          {docReviewStatus && (
+                            <span className={`rounded-full px-2.5 py-1 text-xs font-semibold ${
+                              docReviewStatus === 'accept' ? 'bg-success/12 text-success' :
+                              docReviewStatus === 'needs_clarification' ? 'bg-warning/15 text-warning' :
+                              'bg-error/10 text-error'
+                            }`}>
+                              {docReviewStatus === 'accept' ? 'Accepted' : docReviewStatus === 'needs_clarification' ? 'Needs Clarification' : 'Rejected'}
+                            </span>
+                          )}
+                        </div>
+                      </div>
+                      {firstDoc && (
+                        <div className="mt-4 flex flex-wrap gap-2 border-t border-outline/10 pt-3">
                           <button
-                            disabled={!firstDoc}
                             onClick={() => handleViewDocument(firstDoc)}
-                            className="inline-flex items-center gap-1 rounded-full border border-outline/20 bg-surface-container-lowest px-2.5 py-1 text-xs font-semibold text-on-surface hover:border-primary/30 disabled:cursor-not-allowed disabled:opacity-40"
+                            className="inline-flex items-center gap-1 rounded-full border border-outline/20 bg-surface-container-lowest px-2.5 py-1 text-xs font-semibold text-on-surface hover:border-primary/30"
                           >
                             <Eye className="h-3 w-3" />
                             View
                           </button>
                           <button
-                            disabled={!firstDoc}
                             onClick={() => setSelectedDocument(firstDoc)}
-                            className="inline-flex items-center gap-1 rounded-full border border-outline/20 bg-surface-container-lowest px-2.5 py-1 text-xs font-semibold text-on-surface hover:border-primary/30 disabled:cursor-not-allowed disabled:opacity-40"
+                            className="inline-flex items-center gap-1 rounded-full border border-outline/20 bg-surface-container-lowest px-2.5 py-1 text-xs font-semibold text-on-surface hover:border-primary/30"
                           >
                             <FileText className="h-3 w-3" />
                             Preview
                           </button>
+                          <button
+                            onClick={() => handleDocumentReview(firstDoc.id, 'accept')}
+                            disabled={docReviewStatus === 'accept'}
+                            className="inline-flex items-center gap-1 rounded-full border border-success/30 bg-success/10 px-2.5 py-1 text-xs font-semibold text-success hover:bg-success/15 disabled:opacity-50"
+                          >
+                            <ThumbsUp className="h-3 w-3" />
+                            Accept
+                          </button>
+                          <button
+                            onClick={() => handleDocumentReview(firstDoc.id, 'needs_clarification')}
+                            disabled={docReviewStatus === 'needs_clarification'}
+                            className="inline-flex items-center gap-1 rounded-full border border-warning/30 bg-warning/10 px-2.5 py-1 text-xs font-semibold text-warning hover:bg-warning/15 disabled:opacity-50"
+                          >
+                            <AlertTriangle className="h-3 w-3" />
+                            Needs Clarification
+                          </button>
+                          <button
+                            onClick={() => handleDocumentReview(firstDoc.id, 'reject')}
+                            disabled={docReviewStatus === 'reject'}
+                            className="inline-flex items-center gap-1 rounded-full border border-error/30 bg-error/10 px-2.5 py-1 text-xs font-semibold text-error hover:bg-error/15 disabled:opacity-50"
+                          >
+                            <ThumbsDown className="h-3 w-3" />
+                            Reject
+                          </button>
+                          <button
+                            onClick={() => setDocumentCommentModal({ documentId: firstDoc.id, action: 'comment', existingComment: firstDoc.reviewComment })}
+                            className="inline-flex items-center gap-1 rounded-full border border-outline/20 bg-surface-container-lowest px-2.5 py-1 text-xs font-semibold text-on-surface hover:border-primary/30"
+                          >
+                            <MessageSquare className="h-3 w-3" />
+                            {firstDoc.reviewComment ? 'Edit Comment' : 'Add Comment'}
+                          </button>
                         </div>
-                      </div>
+                      )}
                     </div>
                   )
                 })}
               </div>
+            </section>
+
+            <section className="rounded-3xl border border-outline/10 bg-surface-container-lowest p-6 shadow-ambient">
+              <div className="mb-5 flex items-center justify-between gap-3">
+                <div className="flex items-center gap-3">
+                  <CheckSquare className="h-5 w-5 text-primary" />
+                  <h2 className="font-display text-2xl font-bold text-on-surface">Compliance Checklist</h2>
+                </div>
+                {checklist && (
+                  <span className={`rounded-full px-3 py-1 text-xs font-semibold ${
+                    checklist.allComplete ? 'bg-success/12 text-success' : 'bg-warning/15 text-warning'
+                  }`}>
+                    {checklist.completed}/{checklist.total} Complete
+                  </span>
+                )}
+              </div>
+              <div className="space-y-3">
+                {checklist?.items.map((item) => (
+                  <label
+                    key={item.key}
+                    className="flex cursor-pointer items-start gap-3 rounded-2xl border border-outline/10 bg-surface p-4 hover:bg-surface-container-low transition-colors"
+                  >
+                    <div className="mt-0.5">
+                      {item.checked ? (
+                        <CheckCircle2 className="h-5 w-5 text-success" />
+                      ) : (
+                        <Circle className="h-5 w-5 text-on-surface-variant" />
+                      )}
+                    </div>
+                    <div className="flex-1">
+                      <div className="flex items-center justify-between">
+                        <p className="font-semibold text-on-surface">{item.label}</p>
+                        <span className="rounded-full bg-surface-container px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wider text-on-surface-variant">
+                          {item.category}
+                        </span>
+                      </div>
+                      {item.checked && item.checkedAt && (
+                        <p className="mt-1 text-xs text-on-surface-variant">
+                          Checked by {item.checkedBy} at {new Date(item.checkedAt).toLocaleString()}
+                        </p>
+                      )}
+                    </div>
+                    <input
+                      type="checkbox"
+                      checked={!!item.checked}
+                      onChange={(e) => handleChecklistToggle(item.key, e.target.checked)}
+                      className="sr-only"
+                    />
+                  </label>
+                ))}
+              </div>
+              {!checklist?.allComplete && (
+                <p className="mt-4 rounded-xl bg-warning/10 px-4 py-3 text-xs text-warning">
+                  All checklist items must be completed before approval.
+                </p>
+              )}
             </section>
 
             <section className="rounded-3xl border border-outline/10 bg-surface-container-lowest p-6 shadow-ambient">
@@ -357,6 +555,19 @@ export default function ComplianceCaseReview({ onNavigate }) {
                 <p className="text-xs uppercase tracking-[0.16em] text-on-surface-variant">Risk Score</p>
                 <span className={`mt-3 inline-flex rounded-full px-3 py-1 text-sm font-semibold ${riskTone(riskLevel)}`}>{riskLevel}</span>
               </div>
+
+              {/* Debug info - shows why risk is calculated */}
+              <div className="mb-4 rounded-2xl bg-surface-container-high p-3">
+                <p className="text-[10px] font-semibold uppercase tracking-wider text-on-surface-variant mb-2">Risk Factors</p>
+                <div className="space-y-1 text-xs">
+                  <p className="text-on-surface">Documents Complete: <span className={completion?.allRequiredComplete ? 'text-success' : 'text-error'}>{completion?.allRequiredComplete ? 'Yes' : 'No'}</span></p>
+                  <p className="text-on-surface">Readiness Score: <span className={readinessScore === 100 ? 'text-success' : 'text-warning'}>{readinessScore}%</span></p>
+                  <p className="text-on-surface">AI Risks Count: <span className="text-on-surface-variant">{caseFile?.aiAnalysis?.risks?.length || 0}</span></p>
+                  <p className="text-on-surface">Mismatches Count: <span className="text-on-surface-variant">{caseFile?.aiAnalysis?.mismatches?.length || 0}</span></p>
+                  <p className="text-on-surface">Risk Flags Generated: <span className="text-on-surface-variant">{riskFlags.length}</span></p>
+                </div>
+              </div>
+
               <div className="space-y-3">
                 {riskFlags.length > 0 ? riskFlags.map((flag) => (
                   <div key={flag.id} className={`rounded-2xl border p-4 ${/high|critical/i.test(String(flag.severity || '')) ? 'border-error/20 bg-error/5' : 'border-warning/20 bg-warning/5'}`}>
@@ -430,12 +641,19 @@ export default function ComplianceCaseReview({ onNavigate }) {
                 value={decisionNote}
                 onChange={(event) => setDecisionNote(event.target.value)}
                 rows={3}
-                placeholder="Decision note or RM feedback..."
-                className="mb-3 w-full resize-none rounded-xl border border-outline/15 bg-surface px-3 py-2.5 text-sm text-on-surface focus:outline-none focus:ring-2 focus:ring-primary/20"
+                placeholder="Decision note or RM feedback (required)..."
+                className={`mb-3 w-full resize-none rounded-xl border px-3 py-2.5 text-sm text-on-surface focus:outline-none focus:ring-2 ${
+                  decisionNoteMissing ? 'border-error/50 bg-error/5 focus:ring-error/20' : 'border-outline/15 bg-surface focus:ring-primary/20'
+                }`}
               />
-              {approveDisabled ? (
+              {attemptedSubmit && decisionNoteMissing && (
+                <p className="mb-3 rounded-xl bg-error/10 px-3 py-2 text-xs text-error">
+                  Decision note is required before submitting any action.
+                </p>
+              )}
+              {approveDisabled && !decisionNoteMissing ? (
                 <p className="mb-3 rounded-xl bg-warning/10 px-3 py-2 text-xs text-warning">
-                  Approve is disabled while critical documents or high-risk items remain.
+                  Approve is disabled while checklist is incomplete, critical documents are missing, or high-risk items remain.
                 </p>
               ) : null}
               <div className="space-y-2">
@@ -447,11 +665,19 @@ export default function ComplianceCaseReview({ onNavigate }) {
                   <CheckCircle2 className="h-4 w-4" />
                   Approve Case
                 </button>
-                <button onClick={() => handleDecision('request_info')} className="flex w-full items-center justify-center gap-2 rounded-xl border border-warning/30 bg-warning/10 px-4 py-2.5 text-sm font-semibold text-warning hover:bg-warning/15">
+                <button
+                  onClick={() => handleDecision('request_info')}
+                  disabled={anyDecisionDisabled}
+                  className="flex w-full items-center justify-center gap-2 rounded-xl border border-warning/30 bg-warning/10 px-4 py-2.5 text-sm font-semibold text-warning hover:bg-warning/15 disabled:cursor-not-allowed disabled:opacity-50"
+                >
                   <AlertTriangle className="h-4 w-4" />
                   Request More Information
                 </button>
-                <button onClick={() => handleDecision('reject')} className="flex w-full items-center justify-center gap-2 rounded-xl border border-error/30 bg-error/10 px-4 py-2.5 text-sm font-semibold text-error hover:bg-error/15">
+                <button
+                  onClick={() => handleDecision('reject')}
+                  disabled={anyDecisionDisabled}
+                  className="flex w-full items-center justify-center gap-2 rounded-xl border border-error/30 bg-error/10 px-4 py-2.5 text-sm font-semibold text-error hover:bg-error/15 disabled:cursor-not-allowed disabled:opacity-50"
+                >
                   <XCircle className="h-4 w-4" />
                   Reject Case
                 </button>
@@ -479,6 +705,50 @@ export default function ComplianceCaseReview({ onNavigate }) {
           </aside>
         </div>
       </div>
+
+      {/* Document Comment Modal */}
+      {documentCommentModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
+          <div className="w-full max-w-md rounded-3xl border border-outline/10 bg-surface-container-lowest p-6 shadow-ambient">
+            <div className="mb-4">
+              <h3 className="font-display text-lg font-bold text-on-surface">
+                {documentCommentModal.action === 'needs_clarification' ? 'Request Clarification' :
+                 documentCommentModal.action === 'reject' ? 'Reject Document' : 'Add Document Comment'}
+              </h3>
+              <p className="text-sm text-on-surface-variant mt-1">
+                {documentCommentModal.action === 'needs_clarification' ? 'Explain what clarification is needed from the RM:' :
+                 documentCommentModal.action === 'reject' ? 'Explain why this document is being rejected:' : 'Add a comment to this document:'}
+              </p>
+            </div>
+            <textarea
+              value={documentCommentText}
+              onChange={(e) => setDocumentCommentText(e.target.value)}
+              rows={4}
+              placeholder="Enter your comment..."
+              className="mb-4 w-full resize-none rounded-xl border border-outline/15 bg-surface px-3 py-2.5 text-sm text-on-surface focus:outline-none focus:ring-2 focus:ring-primary/20"
+            />
+            <div className="flex gap-3">
+              <button
+                onClick={() => {
+                  setDocumentCommentModal(null)
+                  setDocumentCommentText('')
+                }}
+                className="flex-1 rounded-xl border border-outline/20 bg-surface px-4 py-2.5 text-sm font-semibold text-on-surface hover:bg-surface-container"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={documentCommentModal.action === 'comment' ? handleDocumentReviewWithComment : handleDocumentReviewWithComment}
+                disabled={!documentCommentText.trim() && documentCommentModal.action !== 'comment'}
+                className="flex-1 rounded-xl bg-primary px-4 py-2.5 text-sm font-semibold text-white hover:bg-primary/90 disabled:cursor-not-allowed disabled:opacity-50"
+              >
+                {documentCommentModal.action === 'comment' ? (documentCommentModal.existingComment ? 'Update Comment' : 'Add Comment') :
+                 documentCommentModal.action === 'needs_clarification' ? 'Request Clarification' : 'Reject Document'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   )
 }
