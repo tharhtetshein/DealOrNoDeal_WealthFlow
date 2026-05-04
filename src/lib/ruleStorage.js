@@ -1,10 +1,28 @@
-// Rule Storage - Phase 1
-// Handles CRUD for compliance rules. Uses localStorage for Phase 1.
-// Future: upgrade to Firestore backend.
-
 import { RULE_STATUS, getDefaultRules, normalizeRule, validateRule, evaluateCondition } from './ruleEngine'
+import { db, hasFirebaseConfig } from './firebase'
+import {
+  collection,
+  deleteDoc,
+  doc,
+  getDocs,
+  orderBy,
+  query,
+  setDoc,
+  writeBatch,
+} from 'firebase/firestore'
 
 const RULES_STORAGE_KEY = 'wealthflow.complianceRules'
+const RULES_COLLECTION = 'complianceRules'
+
+function getRuleDocId(rule) {
+  return `${rule.id}__v${rule.version || 1}`
+}
+
+function ensureFirebaseReady() {
+  if (!hasFirebaseConfig || !db) {
+    throw new Error('Firebase is not configured. Add VITE_FIREBASE_* values in .env')
+  }
+}
 
 function getLocalRules() {
   if (typeof window === 'undefined') return []
@@ -24,10 +42,10 @@ function saveLocalRules(rules) {
   window.localStorage.setItem(RULES_STORAGE_KEY, JSON.stringify(rules.map(normalizeRule)))
 }
 
-export function loadRules() {
-  let rules = getLocalRules().map(normalizeRule)
+function normalizeRuleSet(rules) {
+  let nextRules = (rules || []).map(normalizeRule)
   const defaultsById = new Map(getDefaultRules().map((rule) => [rule.id, normalizeRule(rule)]))
-  rules = rules.map((rule) => {
+  nextRules = nextRules.map((rule) => {
     const defaultRule = defaultsById.get(rule.id)
     if (!defaultRule || rule.author !== 'system') return rule
     return {
@@ -38,16 +56,63 @@ export function loadRules() {
       regulatoryFramework: defaultRule.regulatoryFramework,
     }
   })
-  if (typeof window !== 'undefined' && !window.localStorage.getItem(RULES_STORAGE_KEY)) {
-    saveLocalRules(rules)
-  } else {
-    saveLocalRules(rules)
-  }
-  return rules
+  return nextRules
 }
 
-export function listRules(filter = {}) {
-  let rules = getLocalRules().map(normalizeRule)
+async function listFirebaseRules() {
+  ensureFirebaseReady()
+  const q = query(collection(db, RULES_COLLECTION), orderBy('priority', 'desc'))
+  const snapshot = await getDocs(q)
+  return snapshot.docs.map((item) => normalizeRule(item.data()))
+}
+
+async function saveFirebaseRule(rule) {
+  ensureFirebaseReady()
+  const normalized = normalizeRule(rule)
+  await setDoc(doc(db, RULES_COLLECTION, getRuleDocId(normalized)), normalized, { merge: false })
+  return normalized
+}
+
+async function saveFirebaseRuleSet(rules) {
+  ensureFirebaseReady()
+  const batch = writeBatch(db)
+  rules.map(normalizeRule).forEach((rule) => {
+    batch.set(doc(db, RULES_COLLECTION, getRuleDocId(rule)), rule, { merge: false })
+  })
+  await batch.commit()
+}
+
+async function withRuleStorage(operation, fallback) {
+  if (!hasFirebaseConfig) return fallback()
+  try {
+    return await operation()
+  } catch (error) {
+    console.warn('Falling back to local rule storage:', error)
+    return fallback()
+  }
+}
+
+export async function loadRules() {
+  return withRuleStorage(
+    async () => {
+      let rules = normalizeRuleSet(await listFirebaseRules())
+      if (rules.length === 0) {
+        rules = normalizeRuleSet(getDefaultRules())
+        await saveFirebaseRuleSet(rules)
+      }
+      saveLocalRules(rules)
+      return rules
+    },
+    async () => {
+      const rules = normalizeRuleSet(getLocalRules())
+      saveLocalRules(rules)
+      return rules
+    },
+  )
+}
+
+export async function listRules(filter = {}) {
+  let rules = await loadRules()
   if (filter.status) {
     const s = Array.isArray(filter.status) ? filter.status : [filter.status]
     rules = rules.filter((r) => s.includes(r.status))
@@ -64,9 +129,9 @@ export function listRules(filter = {}) {
   return rules.sort((a, b) => Number(b.priority || 0) - Number(a.priority || 0))
 }
 
-export function getActivePublishedRules() {
+export async function getActivePublishedRules() {
   const now = new Date()
-  return getLocalRules().map(normalizeRule)
+  return (await loadRules())
     .filter((r) => r.status === RULE_STATUS.PUBLISHED)
     .filter((r) => {
       const ed = r.effectiveDate ? new Date(r.effectiveDate) : null
@@ -76,17 +141,17 @@ export function getActivePublishedRules() {
     .sort((a, b) => Number(b.priority || 0) - Number(a.priority || 0))
 }
 
-export function getRuleById(id) {
-  return getLocalRules().map(normalizeRule).find((r) => r.id === id) || null
+export async function getRuleById(id) {
+  return (await loadRules()).find((r) => r.id === id) || null
 }
 
-export function getRuleVersions(id) {
-  const all = getLocalRules().map(normalizeRule).filter((r) => r.id === id)
+export async function getRuleVersions(id) {
+  const all = (await loadRules()).filter((r) => r.id === id)
   return all.sort((a, b) => (b.version || 0) - (a.version || 0))
 }
 
-export function upsertRule(rule) {
-  const rules = getLocalRules().map(normalizeRule)
+export async function upsertRule(rule) {
+  const rules = await loadRules()
   rule = normalizeRule(rule)
   const idx = rules.findIndex((r) => r.id === rule.id && r.version === rule.version)
   const now = new Date().toISOString()
@@ -104,6 +169,7 @@ export function upsertRule(rule) {
     }
     rules.push(draft)
     saveLocalRules(rules)
+    await withRuleStorage(async () => saveFirebaseRule(draft), async () => draft)
     return draft
   }
   const enriched = { ...rule, status: rule.status || RULE_STATUS.DRAFT, updatedAt: now }
@@ -113,11 +179,12 @@ export function upsertRule(rule) {
     rules.push(enriched)
   }
   saveLocalRules(rules)
+  await withRuleStorage(async () => saveFirebaseRule(enriched), async () => enriched)
   return enriched
 }
 
-export function createRuleDraft(draft) {
-  const rules = getLocalRules().map(normalizeRule)
+export async function createRuleDraft(draft) {
+  const rules = await loadRules()
   const now = new Date().toISOString()
   const id = draft.id || `rule-${now.replace(/[:.]/g, '-').slice(0, 19)}`
   const existing = rules.filter((r) => r.id === id)
@@ -133,11 +200,12 @@ export function createRuleDraft(draft) {
   }
   rules.push(rule)
   saveLocalRules(rules)
+  await withRuleStorage(async () => saveFirebaseRule(rule), async () => rule)
   return rule
 }
 
-export function publishRule(id, author = 'system') {
-  const rules = getLocalRules().map(normalizeRule)
+export async function publishRule(id, author = 'system') {
+  const rules = await loadRules()
   const draft = rules.find((r) => r.id === id && r.status === RULE_STATUS.DRAFT)
   if (!draft) return null
   const validation = validateRule(draft)
@@ -159,30 +227,39 @@ export function publishRule(id, author = 'system') {
   draft.publishedBy = author
   draft.updatedAt = new Date().toISOString()
   saveLocalRules(rules)
+  await withRuleStorage(async () => saveFirebaseRuleSet(rules.filter((r) => r.id === id)), async () => rules)
   return { ok: true, rule: draft }
 }
 
-export function archiveRule(id, version) {
-  const rules = getLocalRules()
+export async function archiveRule(id, version) {
+  const rules = await loadRules()
   const rule = rules.find((r) => r.id === id && r.version === version)
   if (!rule) return null
   rule.status = RULE_STATUS.ARCHIVED
   rule.archivedAt = new Date().toISOString()
   rule.updatedAt = new Date().toISOString()
   saveLocalRules(rules)
+  await withRuleStorage(async () => saveFirebaseRule(rule), async () => rule)
   return rule
 }
 
-export function deleteRule(id, version) {
-  const existing = getLocalRules().map(normalizeRule).find((r) => r.id === id && r.version === version)
+export async function deleteRule(id, version) {
+  const existing = (await loadRules()).find((r) => r.id === id && r.version === version)
   if (existing?.status === RULE_STATUS.PUBLISHED) return { ok: false, reason: 'Published rules must be archived, not deleted.' }
-  const rules = getLocalRules().map(normalizeRule).filter((r) => !(r.id === id && r.version === version))
+  const rules = (await loadRules()).filter((r) => !(r.id === id && r.version === version))
   saveLocalRules(rules)
+  await withRuleStorage(
+    async () => deleteDoc(doc(db, RULES_COLLECTION, `${id}__v${version}`)),
+    async () => null,
+  )
   return { ok: true }
 }
 
-export function resetToDefaultRules() {
-  saveLocalRules(getDefaultRules())
+export async function resetToDefaultRules() {
+  const defaults = normalizeRuleSet(getDefaultRules())
+  saveLocalRules(defaults)
+  await withRuleStorage(async () => saveFirebaseRuleSet(defaults), async () => defaults)
+  return defaults
 }
 
 function actionSignature(action) {

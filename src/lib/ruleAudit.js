@@ -5,12 +5,12 @@ import { evaluateCaseRules, getActiveRulesForEvaluation } from './ruleEvaluation
 
 const MAX_SNAPSHOTS_PER_CASE = 50
 
-export function buildRuleSnapshot(caseFile, options = {}) {
+export async function buildRuleSnapshot(caseFile, options = {}) {
   if (!caseFile) return null
-  const rules = getActiveRulesForEvaluation()
+  const rules = await getActiveRulesForEvaluation()
   const activeRuleVersions = rules.map((r) => ({ id: r.id, version: r.version }))
 
-  const evaluation = evaluateCaseRules(caseFile, options)
+  const evaluation = await evaluateCaseRules(caseFile, options)
   if (!evaluation) return null
 
   const snapshot = {

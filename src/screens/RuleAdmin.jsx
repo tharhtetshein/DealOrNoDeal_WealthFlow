@@ -11,12 +11,10 @@ import {
   deleteRule,
   upsertRule,
   resetToDefaultRules,
-  loadRules,
-  detectRuleConflicts,
 } from '../lib/ruleStorage'
 import { evaluateRule, extractFacts, validateRule } from '../lib/ruleEngine'
 import { evaluateCaseRules } from '../lib/ruleEvaluation'
-import { getAllLocalCaseFiles } from '../lib/caseFiles'
+import { getAllCaseFiles } from '../lib/caseFiles'
 
 function Badge({ children, variant = 'default' }) {
   const styles = {
@@ -143,7 +141,7 @@ export default function RuleAdmin({ onBack }) {
 
   useEffect(() => {
     refreshRules()
-    setCases(getAllLocalCaseFiles())
+    getAllCaseFiles().then(setCases).catch(() => setCases([]))
   }, [])
 
   useEffect(() => {
@@ -153,9 +151,9 @@ export default function RuleAdmin({ onBack }) {
     }
   }, [notification])
 
-  function refreshRules() {
-    loadRules()
-    setRules(listRules())
+  async function refreshRules() {
+    const nextRules = await listRules()
+    setRules(nextRules)
   }
 
   function showNotification(message, type = 'success') {
@@ -224,7 +222,7 @@ export default function RuleAdmin({ onBack }) {
     setActiveTab('editor')
   }
 
-  function handleSaveDraft() {
+  async function handleSaveDraft() {
     const ruleToSave = { ...draftRule }
     if (!ruleToSave.id) ruleToSave.id = generateRuleId()
     const validation = validateRule(ruleToSave)
@@ -232,47 +230,47 @@ export default function RuleAdmin({ onBack }) {
       showNotification(`Validation failed: ${validation.errors.join(', ')}`, 'error')
       return
     }
-    upsertRule(ruleToSave)
-    refreshRules()
+    await upsertRule(ruleToSave)
+    await refreshRules()
     showNotification(isEditing ? 'Rule updated' : 'Rule draft saved')
     setActiveTab('list')
   }
 
-  function handlePublishRule(id) {
-    const result = publishRule(id, 'admin')
+  async function handlePublishRule(id) {
+    const result = await publishRule(id, 'admin')
     if (!result?.ok) {
       showNotification(`Publish blocked: ${(result?.errors || [result?.reason || 'rule is not publishable']).join(', ')}`, 'error')
       return
     }
-    refreshRules()
+    await refreshRules()
     showNotification('Rule published')
   }
 
-  function handleArchiveRule(id, version) {
-    archiveRule(id, version)
-    refreshRules()
+  async function handleArchiveRule(id, version) {
+    await archiveRule(id, version)
+    await refreshRules()
     showNotification('Rule archived')
   }
 
-  function handleDeleteRule(id, version) {
+  async function handleDeleteRule(id, version) {
     if (!window.confirm('Are you sure you want to delete this rule?')) return
-    const result = deleteRule(id, version)
+    const result = await deleteRule(id, version)
     if (result && !result.ok) {
       showNotification(result.reason, 'error')
       return
     }
-    refreshRules()
+    await refreshRules()
     showNotification('Rule deleted')
   }
 
-  function handleResetDefaults() {
+  async function handleResetDefaults() {
     if (!window.confirm('Reset all rules to system defaults? This will replace current rules.')) return
-    resetToDefaultRules()
-    refreshRules()
+    await resetToDefaultRules()
+    await refreshRules()
     showNotification('Rules reset to defaults')
   }
 
-  function handleRunSandbox() {
+  async function handleRunSandbox() {
     if (!sandboxRule || !sandboxCase) {
       showNotification('Select both a rule and a case to test', 'error')
       return
@@ -285,11 +283,12 @@ export default function RuleAdmin({ onBack }) {
     }
     const facts = extractFacts(caseFile)
     const triggered = evaluateRule(rule, facts)
+    const evaluation = await evaluateCaseRules(caseFile, { baselineReadiness: 100, baselineRisk: 'Low' })
     setSandboxResult({
       rule,
       facts,
       triggered,
-      evaluation: evaluateCaseRules(caseFile, { baselineReadiness: 100, baselineRisk: 'Low' }),
+      evaluation,
       timestamp: new Date().toISOString(),
     })
   }

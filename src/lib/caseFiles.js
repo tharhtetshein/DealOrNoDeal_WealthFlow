@@ -161,15 +161,15 @@ function normalizeCaseFile(caseFile) {
   }
 }
 
-function attachRuleSnapshot(caseFile, options = {}) {
+async function attachRuleSnapshot(caseFile, options = {}) {
   if (!caseFile || !caseFile.id) return caseFile
-  const snapshot = buildRuleSnapshot(caseFile, {
+  const snapshot = await buildRuleSnapshot(caseFile, {
     triggeredBy: options.triggeredBy || 'system',
     evaluatedBy: options.evaluatedBy || 'system',
   })
   if (!snapshot) return caseFile
   const enriched = appendRuleSnapshot(caseFile, snapshot)
-  enriched._ruleEvaluation = evaluateCaseRules(caseFile)
+  enriched._ruleEvaluation = await evaluateCaseRules(caseFile)
   logRuleEvaluationEvent({
     caseId: caseFile.id,
     snapshotId: snapshot.snapshotId,
@@ -188,15 +188,15 @@ function getRuleDecisionSnapshot(caseFile) {
     || null
 }
 
-function persistRuleSnapshot(caseFile, options = {}) {
-  return upsertLocalCaseFile(attachRuleSnapshot(caseFile, options))
+async function persistRuleSnapshot(caseFile, options = {}) {
+  return upsertLocalCaseFile(await attachRuleSnapshot(caseFile, options))
 }
 
 export async function rerunRuleEvaluation(caseId, options = {}) {
   const existing = getLocalCaseFileById(caseId) || normalizeCaseFile(await getFirebaseCaseFile(caseId))
   if (!existing) return { ok: false, reason: 'Case not found' }
 
-  const updated = persistRuleSnapshot(existing, {
+  const updated = await persistRuleSnapshot(existing, {
     triggeredBy: options.triggeredBy || 'manual-rerun',
     evaluatedBy: options.evaluatedBy || 'Compliance Officer',
   })
@@ -806,7 +806,7 @@ export async function createDraftCase(formData) {
 
       const id = await createFirebaseCaseFile(payload)
       const caseFile = normalizeCaseFile(await getFirebaseCaseFile(id))
-      return caseFile ? persistRuleSnapshot(caseFile, { triggeredBy: 'createCase' }) : null
+      return caseFile ? await persistRuleSnapshot(caseFile, { triggeredBy: 'createCase' }) : null
     },
     async () => persistRuleSnapshot(createLocalDraftCase(formData), { triggeredBy: 'createCase' }),
   )
@@ -842,7 +842,7 @@ export async function updateCaseCore(caseId, formData) {
       })
 
       const updated = normalizeCaseFile(await getFirebaseCaseFile(caseId))
-      return updated ? persistRuleSnapshot(updated, { triggeredBy: 'profile-save' }) : null
+      return updated ? await persistRuleSnapshot(updated, { triggeredBy: 'profile-save' }) : null
     },
     async () => {
       const existing = getLocalCaseFileById(caseId)
@@ -895,7 +895,7 @@ export async function updateCaseData(caseId, payload) {
       await updateFirebaseCaseFile(caseId, merged)
 
       const updated = normalizeCaseFile(await getFirebaseCaseFile(caseId))
-      return updated ? persistRuleSnapshot(updated, { triggeredBy: 'updateCaseData' }) : null
+      return updated ? await persistRuleSnapshot(updated, { triggeredBy: 'updateCaseData' }) : null
     },
     async () => {
       const existing = getLocalCaseFileById(caseId)
@@ -978,7 +978,7 @@ export async function addDocumentToCase(caseId, documentMeta) {
       })
 
       const updated = normalizeCaseFile(await getFirebaseCaseFile(caseId))
-      return updated ? persistRuleSnapshot(updated, { triggeredBy: 'addDocument' }) : null
+      return updated ? await persistRuleSnapshot(updated, { triggeredBy: 'addDocument' }) : null
     },
     async () => {
       const existing = getLocalCaseFileById(caseId)
@@ -1030,7 +1030,7 @@ export async function removeDocumentFromCase(caseId, documentId) {
       }
 
       const updated = normalizeCaseFile(await getFirebaseCaseFile(caseId))
-      return updated ? persistRuleSnapshot(updated, { triggeredBy: 'removeDocument' }) : null
+      return updated ? await persistRuleSnapshot(updated, { triggeredBy: 'removeDocument' }) : null
     },
     async () => {
       const existing = getLocalCaseFileById(caseId)
