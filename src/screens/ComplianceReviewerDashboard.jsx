@@ -172,8 +172,8 @@ export default function ComplianceReviewerDashboard({ onNavigate }) {
         </div>
 
         <div className="grid grid-cols-1 gap-4 md:grid-cols-4">
-          <MetricCard label="Pending Review" value={metrics.pendingReview} icon={Clock3} tone="text-warning" />
-          <MetricCard label="Under Review" value={metrics.underReview} icon={FileText} tone="text-tertiary" />
+          <MetricCard label="Submitted for Review" value={metrics.pendingReview} icon={Clock3} tone="text-warning" />
+          <MetricCard label="In Review" value={metrics.underReview} icon={FileText} tone="text-tertiary" />
           <MetricCard label="Escalated" value={metrics.escalated} icon={ShieldX} tone="text-error" />
           <MetricCard label="Approved" value={metrics.approved} icon={ShieldCheck} tone="text-success" />
         </div>

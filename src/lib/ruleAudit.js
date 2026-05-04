@@ -20,6 +20,7 @@ export async function buildRuleSnapshot(caseFile, options = {}) {
     evaluatedBy: options.evaluatedBy || 'system',
     evaluatedAt: evaluation.evaluatedAt,
     ruleSetVersion: evaluation.ruleSetVersion,
+    ruleDocumentUxVersion: 2,
     activeRuleVersions,
     facts: evaluation.facts,
     triggeredRules: evaluation.triggeredRules.map((t) => ({

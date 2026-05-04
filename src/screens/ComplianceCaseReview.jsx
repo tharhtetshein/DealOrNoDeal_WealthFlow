@@ -172,9 +172,9 @@ export default function ComplianceCaseReview({ onNavigate }) {
       })
       if (result) {
         nextCase = result
-        setMessage(`Case auto-transitioned to Under Review. Status: ${result.status}`)
+        setMessage(`Case auto-transitioned to In Review. Status: ${result.status}`)
       } else {
-        setMessage(`Failed to transition case status from Pending Review`)
+        setMessage(`Failed to transition case status from Submitted for Review`)
       }
     }
     const nextReadiness = caseId ? await getReadinessScore(caseId) : null
@@ -289,7 +289,7 @@ export default function ComplianceCaseReview({ onNavigate }) {
       return
     }
     setDecisionNote('')
-    setMessage(decision === 'approve' ? 'Case approved and sent to Operations.' : decision === 'request_info' ? 'Case returned to RM as Action Required.' : 'Case rejected and locked.')
+    setMessage(decision === 'approve' ? 'Case approved and sent to Operations.' : decision === 'request_info' ? 'Case returned to RM as Request More Information.' : 'Case rejected and locked.')
     await loadCase()
   }
 

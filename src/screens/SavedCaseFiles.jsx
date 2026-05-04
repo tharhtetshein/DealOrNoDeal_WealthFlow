@@ -5,16 +5,19 @@ import {
   deleteCaseFile,
   getAllCaseFiles,
   markReadyForReview,
+  CASE_STATUS,
   setActiveCaseId,
 } from '../lib/caseFiles'
 
 const statusPill = {
   Draft: 'bg-surface-container-high text-on-surface-variant rounded-2xl px-4 py-1.5',
   'Missing Documents': 'bg-error/10 text-error',
-  'Pending Review': 'bg-warning/20 text-warning',
-  'Under Review': 'bg-tertiary/15 text-tertiary',
+  'Ready for Review': 'bg-success/12 text-success',
+  'Submitted for Review': 'bg-warning/20 text-warning',
+  'In Review': 'bg-tertiary/15 text-tertiary',
   Approved: 'bg-success/15 text-success',
   Escalated: 'bg-error/20 text-error',
+  'Request More Information': 'bg-warning/15 text-warning',
 }
 
 function formatDate(value) {
@@ -57,7 +60,7 @@ export default function SavedCaseFiles({ onNavigate }) {
       return
     }
 
-    setMessage('Case submitted. Status updated to Pending Review.')
+    setMessage(`Case marked ${CASE_STATUS.READY_FOR_REVIEW}.`)
     await loadSavedCases()
   }
 
@@ -128,7 +131,9 @@ export default function SavedCaseFiles({ onNavigate }) {
               {filteredCases.map((caseFile) => (
                 <tr key={caseFile.id} className="border-b border-outline/10 hover:bg-surface-container-lowest transition-colors">
                   <td className="px-6 py-4 text-sm text-on-surface font-medium">{caseFile.clientName}</td>
-                  <td className="px-6 py-4 text-sm text-on-surface">{caseFile.netWorth || 'Not specified'}</td>
+                  <td className="px-6 py-4 text-sm text-on-surface">
+                    {caseFile.netWorth ? `${caseFile.netWorthCurrency || 'USD'} ${caseFile.netWorth}` : 'Not specified'}
+                  </td>
                   <td className="px-6 py-4 text-sm text-on-surface-variant">{(caseFile.documents || []).length} file(s)</td>
                   <td className="px-6 py-4">
                     <span className={`inline-flex items-center px-3 py-1 rounded-full text-xs font-medium ${statusPill[caseFile.status] || 'bg-surface-container-high text-on-surface'}`}>

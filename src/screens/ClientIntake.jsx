@@ -12,6 +12,7 @@ export default function ClientIntake({ onNext, clientData, setClientData }) {
     nationality: '',
     occupation: '',
     estimatedWealth: '',
+    netWorthCurrency: 'USD',
     primarySource: '',
     riskProfile: 'medium'
   })
@@ -97,15 +98,29 @@ export default function ClientIntake({ onNext, clientData, setClientData }) {
                 <div className="space-y-2">
                   <Label htmlFor="estimatedWealth" className="flex items-center gap-2">
                     <DollarSign className="w-4 h-4" />
-                    Estimated Net Worth (SGD)
+                    Estimated Net Worth
                   </Label>
-                  <Input
-                    id="estimatedWealth"
-                    value={formData.estimatedWealth}
-                    onChange={(e) => handleChange('estimatedWealth', e.target.value)}
-                    placeholder="e.g., 5,000,000"
-                    required
-                  />
+                  <div className="grid grid-cols-[90px_minmax(0,1fr)] gap-2">
+                    <select
+                      value={formData.netWorthCurrency || 'USD'}
+                      onChange={(e) => handleChange('netWorthCurrency', e.target.value)}
+                      className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                    >
+                      <option value="USD">USD</option>
+                      <option value="SGD">SGD</option>
+                      <option value="CHF">CHF</option>
+                      <option value="GBP">GBP</option>
+                      <option value="EUR">EUR</option>
+                    </select>
+                    <Input
+                      id="estimatedWealth"
+                      value={formData.estimatedWealth}
+                      onChange={(e) => handleChange('estimatedWealth', e.target.value)}
+                      placeholder="e.g., 5,000,000"
+                      required
+                    />
+                  </div>
+                  <p className="text-xs text-muted-foreground">Minimum: USD 5,000,000 equivalent.</p>
                 </div>
 
                 <div className="space-y-2">

@@ -22,6 +22,7 @@ import {
 } from 'lucide-react'
 import {
   addDocumentToCase,
+  CASE_STATUS,
   CLIENT_PROFILE_TYPE,
   getDocumentCompletionSummary,
   getDocumentTypeGroups,
@@ -40,16 +41,19 @@ import {
 } from '../lib/caseFiles'
 import { analyzeCaseDocuments, extractDocumentText } from '../lib/api'
 import { hasFirebaseConfig, uploadCaseDocumentFile } from '../lib/firebase'
+import { getActivePublishedRules } from '../lib/ruleStorage'
 
 const tabs = [
   { id: 'overview', label: 'Overview' },
   { id: 'documents', label: 'Documents' },
   { id: 'ai-insights', label: 'AI Insights' },
   { id: 'sow-draft', label: 'SoW Draft' },
-  { id: 'applied-rules', label: 'Applied Rules' },
+  { id: 'applied-rules', label: 'Applied Rules', complianceOnly: true },
   { id: 'risk-issues', label: 'Risk & Issues' },
   { id: 'audit-trail', label: 'Audit Trail' },
 ]
+
+const RULE_DOCUMENT_UX_VERSION = 2
 
 function formatDate(value) {
   if (!value) return '--'
@@ -78,25 +82,64 @@ function formatCurrencyLikeNumber(value) {
 
 function getStatusBadge(status) {
   switch (status) {
-    case 'Draft':
+    case CASE_STATUS.DRAFT:
       return 'bg-surface-container-high text-on-surface-variant'
-    case 'Missing Documents':
+    case CASE_STATUS.MISSING_DOCUMENTS:
       return 'bg-error/10 text-error'
-    case 'Under Review':
+    case CASE_STATUS.READY_FOR_REVIEW:
+      return 'bg-success/12 text-success'
+    case CASE_STATUS.PENDING_REVIEW:
       return 'bg-warning/20 text-warning'
-    case 'Pending Review':
+    case CASE_STATUS.UNDER_REVIEW:
       return 'bg-tertiary/12 text-tertiary'
-    case 'Action Required':
+    case CASE_STATUS.ACTION_REQUIRED:
       return 'bg-warning/15 text-warning'
-    case 'Rejected':
+    case CASE_STATUS.REJECTED:
       return 'bg-error/10 text-error'
-    case 'Escalated':
+    case CASE_STATUS.ESCALATED:
       return 'bg-error/20 text-error'
-    case 'Approved':
+    case CASE_STATUS.APPROVED:
       return 'bg-success/15 text-success'
     default:
       return 'bg-surface-container text-on-surface-variant'
   }
+}
+
+function getStatusOwner(caseFile) {
+  switch (caseFile?.status) {
+    case CASE_STATUS.DRAFT:
+    case CASE_STATUS.MISSING_DOCUMENTS:
+    case CASE_STATUS.READY_FOR_REVIEW:
+    case CASE_STATUS.ACTION_REQUIRED:
+      return 'RM'
+    case CASE_STATUS.PENDING_REVIEW:
+      return 'Compliance Queue'
+    case CASE_STATUS.UNDER_REVIEW:
+      return caseFile?.assignedComplianceOfficer || 'Compliance Reviewer'
+    case CASE_STATUS.ESCALATED:
+      return caseFile?.seniorComplianceOwner || 'Senior Compliance'
+    case CASE_STATUS.APPROVED:
+    case CASE_STATUS.REJECTED:
+      return 'Completed'
+    default:
+      return 'System'
+  }
+}
+
+const STATUS_TIMELINE = [
+  CASE_STATUS.DRAFT,
+  CASE_STATUS.MISSING_DOCUMENTS,
+  CASE_STATUS.READY_FOR_REVIEW,
+  CASE_STATUS.PENDING_REVIEW,
+  CASE_STATUS.UNDER_REVIEW,
+  CASE_STATUS.APPROVED,
+]
+
+function getStatusTimelineIndex(status) {
+  if (status === CASE_STATUS.REJECTED || status === CASE_STATUS.ESCALATED) return STATUS_TIMELINE.indexOf(CASE_STATUS.UNDER_REVIEW)
+  if (status === CASE_STATUS.ACTION_REQUIRED) return STATUS_TIMELINE.indexOf(CASE_STATUS.MISSING_DOCUMENTS)
+  const index = STATUS_TIMELINE.indexOf(status)
+  return index >= 0 ? index : 0
 }
 
 function getProgressTone(score) {
@@ -439,18 +482,247 @@ function getUploadTypeForAction(actionText) {
   }
   if (/sanctions?|pep|adverse media|screening/.test(text)) return 'Full Sanctions, PEP, and Adverse Media Screening'
   if (/ongoing monitoring|periodic review|monitoring|ownership structure/.test(text)) return 'Enhanced Ongoing Monitoring Plan'
+  if (/enhanced due.?diligence|\bedd\b|cross-border employment/.test(text)) return 'Enhanced Due Diligence Screening'
+  if (/singapore.*tax|iras|dual tax residency|tax residency certificate|tax residency documentation|residency letter/.test(text)) return 'Singapore Tax Residency Evidence'
+  if (/w-?9|fatca|self.?certification|us person.*tax/.test(text)) return 'W-9 / FATCA Documentation'
+  if (/form 1040|us individual tax return|taxable income/.test(text)) return 'US Tax Return / Form 1040'
   if (/share.?sale|cash proceeds|transaction confirmation|secondary share/.test(text)) return 'Certified Share-Sale Proceeds Confirmation'
   if (/address|utility/.test(text)) return 'Address Proof'
   if (/employment contract/.test(text)) return 'Employment Contract'
   if (/payslip|salary/.test(text)) return 'Payslips'
-  if (/equity|grant|vesting|brokerage/.test(text)) return 'Equity Compensation Supporting Documents'
+  if (/rsu|restricted stock|stock compensation|equity|grant|vesting|brokerage|investment portfolio|portfolio growth/.test(text)) return 'RSU / Portfolio Growth Support'
   if (/dividend/.test(text)) return 'Dividend Statements'
   if (/net.?worth|wealth statement|asset.?valuation/.test(text)) return 'Net Worth / Asset Valuation'
   if (/source.?of.?funds|sof|bank|liquidity|balance/.test(text)) return 'Source of Funds Supporting Documents'
   return 'Additional Supporting Evidence'
 }
 
-function getUploadedEvidenceCount(caseFile, uploadType) {
+const EVIDENCE_CATEGORY_DEFINITIONS = {
+  singapore_tax_residency: {
+    label: 'Singapore Tax Residency Evidence',
+    uploadType: 'Singapore Tax Residency Evidence',
+    match: /\b(singapore.*tax|iras|tax residency certificate|tax residency documentation|tax residency letter|dual tax residency|residency certificate|residency notice)\b/i,
+  },
+  fatca_documentation: {
+    label: 'W-9 / FATCA Documentation',
+    uploadType: 'W-9 / FATCA Documentation',
+    match: /\b(w-?9|fatca|self.?certification|specified us person|us person.*tax|taxpayer identification number|tin provided)\b/i,
+  },
+  rsu_portfolio_support: {
+    label: 'RSU / Portfolio Growth Support',
+    uploadType: 'RSU / Portfolio Growth Support',
+    match: /\b(rsu|restricted stock|stock compensation|stock plan|vesting|vested|grant|brokerage|investment portfolio|portfolio growth|listed securities|equity compensation)\b/i,
+  },
+  brokerage_statement: {
+    label: 'Brokerage / Investment Statement',
+    uploadType: 'Brokerage / Investment Statement',
+    match: /\b(brokerage statement|investment statement|portfolio statement|securities account)\b/i,
+  },
+  bank_statement: {
+    label: 'Bank Statement Evidence',
+    uploadType: 'Bank Statements (Source of Funds)',
+    match: /\b(bank statement|source of funds|sof|salary transfer|bonus transfer|cash balance|liquidity)\b/i,
+  },
+  source_of_wealth: {
+    label: 'Source Of Wealth Evidence',
+    uploadType: 'Source of Wealth Supporting Documents',
+    match: /\b(source of wealth|sow|wealth verification|net worth|net-worth|asset statement|asset valuation|asset breakdown|property deed|financial statement|conversion rationale|conversion methodology|currency conversion|single currency)\b/i,
+  },
+  employment_income: {
+    label: 'Employment Income Evidence',
+    uploadType: 'Employment Evidence',
+    match: /\b(employment|employer|salary|payslip|bonus|income letter|employment contract)\b/i,
+  },
+  company_ownership: {
+    label: 'Company Ownership Evidence',
+    uploadType: 'Business Registry Extract',
+    match: /\b(company ownership|shareholding|business registry|company registration|employer registration|registry extract)\b/i,
+  },
+  dividend_income: {
+    label: 'Dividend Income Evidence',
+    uploadType: 'Dividend Statements',
+    match: /\b(dividend|distribution)\b/i,
+  },
+  address_proof: {
+    label: 'Address Proof',
+    uploadType: 'Address Proof',
+    match: /\b(address proof|residential proof|residence proof|utility bill|lease|driver.?s licence|driver.?s license)\b/i,
+  },
+  identity_document: {
+    label: 'Identity Document',
+    uploadType: 'Passport / ID',
+    match: /\b(passport|identity document|id document|national id)\b/i,
+  },
+}
+
+function getEvidenceCategoryForText(value) {
+  const text = formatAiText(value, '').toLowerCase()
+  if (!text) return null
+
+  if (/\b(form 1040|us individual tax return|w-?2|us tax return)\b/.test(text)) return 'us_tax_return'
+  if (/\b(w-?9|fatca|self.?certification|specified us person|us person.*tax|taxpayer identification number|tin provided)\b/.test(text)) return 'fatca_documentation'
+  if (/\b(singapore.*tax|iras|dual tax residency|tax residency certificate|tax residency documentation|tax residency letter|residency notice)\b/.test(text)) return 'singapore_tax_residency'
+  if (/\b(rsu|restricted stock|stock compensation|stock plan|vesting|vested|grant)\b/.test(text)) return 'rsu_portfolio_support'
+  if (/\b(portfolio growth|brokerage|investment portfolio|portfolio statement|listed securities)\b/.test(text)) return 'rsu_portfolio_support'
+  if (/\b(bank statement|source of funds|sof|salary transfer|bonus transfer|cash balance|liquidity)\b/.test(text)) return 'bank_statement'
+  if (/\b(source of wealth|sow|wealth verification|net worth|net-worth|asset statement|asset valuation|asset breakdown|property deed|financial statement|conversion rationale|conversion methodology|currency conversion|single currency)\b/.test(text)) return 'source_of_wealth'
+  if (/\b(employment|employer|salary|payslip|bonus|income letter|employment contract)\b/.test(text)) return 'employment_income'
+  if (/\b(company ownership|shareholding|business registry|company registration|employer registration|registry extract)\b/.test(text)) return 'company_ownership'
+  if (/\b(dividend|distribution)\b/.test(text)) return 'dividend_income'
+  if (/\b(address proof|residential proof|residence proof|utility bill|lease|driver.?s licence|driver.?s license)\b/.test(text)) return 'address_proof'
+  if (/\b(passport|identity document|id document|national id)\b/.test(text)) return 'identity_document'
+  if (/\b(sanctions?|pep|adverse media|screening)\b/.test(text)) return 'screening'
+  if (/\b(enhanced due.?diligence|\bedd\b)\b/.test(text)) return 'enhanced_due_diligence'
+  return null
+}
+
+function getEvidenceDefinition(category, fallbackText = '') {
+  if (category === 'us_tax_return') {
+    return { label: 'US Tax Return / Form 1040', uploadType: 'US Tax Return / Form 1040' }
+  }
+  if (category === 'fatca_documentation') {
+    return { label: 'W-9 / FATCA Documentation', uploadType: 'W-9 / FATCA Documentation' }
+  }
+  if (category === 'screening') {
+    return { label: 'Screening Evidence', uploadType: 'Full Sanctions, PEP, and Adverse Media Screening' }
+  }
+  if (category === 'enhanced_due_diligence') {
+    return { label: 'Enhanced Due Diligence Evidence', uploadType: 'Enhanced Due Diligence Screening' }
+  }
+  return EVIDENCE_CATEGORY_DEFINITIONS[category]
+    || { label: formatAiText(fallbackText, 'Additional Supporting Evidence'), uploadType: getUploadTypeForAction(fallbackText) || 'Additional Supporting Evidence' }
+}
+
+function getUploadedEvidenceForCategory(caseFile, evidenceCategory) {
+  if (!evidenceCategory) return []
+  const matches = (caseFile?.documents || []).filter((document) => {
+    const haystack = [
+      document.evidenceCategory,
+      document.category,
+      document.name,
+      document.suggestedActionText,
+      document.extractedText,
+    ].join(' ')
+    return document.evidenceCategory === evidenceCategory || getEvidenceCategoryForText(haystack) === evidenceCategory
+  })
+  return Array.from(new Map(matches.map((document) => [
+    String(document.id || document.name || document.category || '').toLowerCase(),
+    document,
+  ])).values())
+}
+
+function getUniqueEvidenceFileNames(documents = []) {
+  return Array.from(new Set(
+    documents
+      .map((document) => document.name || document.category || 'uploaded evidence')
+      .filter(Boolean),
+  ))
+}
+
+function getFriendlyAiErrorMessage(error) {
+  const message = String(error?.message || '')
+  if (/temporarily unavailable|daily AI token limit|rate limit|tokens per day|tokens per minute|429|try again/i.test(message)) {
+    const retryMatch = message.match(/about\s+(\d+)\s+minute/i) || message.match(/try again in\s+(\d+)m/i)
+    return retryMatch
+      ? `AI analysis is temporarily unavailable. Try again in about ${retryMatch[1]} minute(s).`
+      : 'AI analysis is temporarily unavailable because the daily AI token limit was reached. Please try again later.'
+  }
+
+  if (/groq|organization|service tier|billing|api key|openai\/gpt/i.test(message)) {
+    return 'AI analysis is temporarily unavailable. Please try again later.'
+  }
+
+  return message || 'AI analysis failed. Check that the backend is running and try again.'
+}
+
+function buildNormalizedSuggestedActions(suggestions = [], caseFile) {
+  const priorityRank = { High: 3, Medium: 2, Low: 1 }
+  const grouped = new Map()
+
+  suggestions.forEach((suggestion, index) => {
+    const text = formatAiText(suggestion, '').trim()
+    if (!text) return
+    const priority = getActionPriority(text)
+    if (priority === 'Low') return
+    const evidenceCategory = getEvidenceCategoryForText(text) || `action_${buildSuggestedActionId(text, index, 'category')}`
+    const definition = getEvidenceDefinition(evidenceCategory, text)
+    const existing = grouped.get(evidenceCategory)
+    const candidate = {
+      text,
+      priority,
+      uploadType: definition.uploadType || getUploadTypeForAction(text),
+      evidenceCategory,
+      relatedSuggestions: [text],
+    }
+
+    if (!existing) {
+      grouped.set(evidenceCategory, candidate)
+      return
+    }
+
+    existing.relatedSuggestions.push(text)
+    if ((priorityRank[priority] || 0) > (priorityRank[existing.priority] || 0)) {
+      existing.priority = priority
+    }
+    if (text.length < existing.text.length || /\b(obtain|request|collect|provide|confirm|clarify)\b/i.test(text)) {
+      existing.text = text
+    }
+  })
+
+  return Array.from(grouped.values()).map((action) => {
+    const definition = getEvidenceDefinition(action.evidenceCategory, action.text)
+    const coveredDocuments = getUploadedEvidenceForCategory(caseFile, action.evidenceCategory)
+    return {
+      ...action,
+      title: definition.label || action.text,
+      uploadType: definition.uploadType || action.uploadType,
+      suggestedActionId: `suggestion_${action.evidenceCategory}`,
+      coveredDocuments,
+      uploadedCount: coveredDocuments.length,
+      evidenceLabel: coveredDocuments.length > 0 ? 'Covered by uploaded evidence' : action.priority === 'High' ? 'Evidence needed' : 'Recommended',
+    }
+  })
+}
+
+function buildSuggestedActionId(actionText, index = 0, prefix = 'suggestion') {
+  const source = formatAiText(actionText, '').trim().toLowerCase()
+  let hash = 0
+  for (let i = 0; i < source.length; i += 1) {
+    hash = ((hash << 5) - hash) + source.charCodeAt(i)
+    hash |= 0
+  }
+  return `${prefix}_${index + 1}_${Math.abs(hash).toString(36)}`
+}
+
+function getRuleVersionSignature(items = []) {
+  return [...items]
+    .map((item) => `${item.id}:v${item.version || 1}`)
+    .sort()
+    .join('|')
+}
+
+function shouldAutoRunRulesForCase(caseFile) {
+  if (!caseFile?.id) return false
+  const latestSnapshot = caseFile._lastRuleSnapshot
+    || (Array.isArray(caseFile.ruleSnapshots) ? caseFile.ruleSnapshots[caseFile.ruleSnapshots.length - 1] : null)
+  const activeRules = getActivePublishedRules()
+  if (activeRules.length === 0) return false
+  if (!latestSnapshot) return true
+  if (latestSnapshot.ruleDocumentUxVersion !== RULE_DOCUMENT_UX_VERSION) return true
+
+  const activeSignature = getRuleVersionSignature(activeRules)
+  const snapshotSignature = getRuleVersionSignature(latestSnapshot.activeRuleVersions || [])
+  return activeSignature !== snapshotSignature
+}
+
+function getUploadedEvidenceCount(caseFile, uploadType, suggestedActionId = null) {
+  if (suggestedActionId) {
+    return (caseFile?.documents || []).filter((document) => (
+      document.uploadedForSuggestion === true
+      && document.suggestedActionId === suggestedActionId
+    )).length
+  }
+
   if (!uploadType) return 0
   const target = normalizeUploadedCategory(uploadType).toLowerCase()
   const targetMatchers = [
@@ -645,7 +917,71 @@ function buildAuditEntries(caseFile) {
     action: `Evaluated ${snapshot.activeRuleVersions?.length || 0} active rule(s); ${snapshot.triggeredRules?.length || 0} triggered. Rule set ${snapshot.ruleSetVersion}.`,
   }))
 
-  return [...statusEntries, ...documentEntries, ...analysisEntry, ...submissionEntry, ...ruleEntries]
+  const ruleSnapshots = Array.isArray(caseFile?.ruleSnapshots) ? caseFile.ruleSnapshots : []
+  const sortedRuleSnapshots = [...ruleSnapshots].sort((a, b) => Date.parse(a.evaluatedAt || '') - Date.parse(b.evaluatedAt || ''))
+  const resolvedBlockerEntries = sortedRuleSnapshots.flatMap((snapshot, index) => {
+    const previous = sortedRuleSnapshots[index - 1]
+    if (!previous) return []
+    const previousBlockers = previous.aggregatedActions?.blockers || []
+    const currentBlockers = snapshot.aggregatedActions?.blockers || []
+    if (previousBlockers.length === 0 || currentBlockers.length > 0) return []
+    return [{
+      timestampRaw: snapshot.evaluatedAt,
+      timestamp: formatDateTime(snapshot.evaluatedAt),
+      actor: 'Rule Engine',
+      action: 'Resolved rule-created submission blockers.',
+    }]
+  })
+
+  const ruleDetailEntries = ruleSnapshots.flatMap((snapshot) => {
+    const triggeredEntries = (snapshot.triggeredRules || []).map((rule) => ({
+      timestampRaw: snapshot.evaluatedAt,
+      timestamp: formatDateTime(snapshot.evaluatedAt),
+      actor: 'Rule Engine',
+      action: `Triggered ${rule.ruleName || rule.ruleId}${rule.policyReference ? ` (${rule.policyReference})` : ''}.`,
+    }))
+    const requiredDocEntries = (snapshot.aggregatedActions?.requiredDocuments || []).map((document) => ({
+      timestampRaw: snapshot.evaluatedAt,
+      timestamp: formatDateTime(snapshot.evaluatedAt),
+      actor: 'Rule Engine',
+      action: `Added rule-required document: ${document.target || document.label || 'supporting evidence'}.`,
+    }))
+    const blockerEntries = (snapshot.aggregatedActions?.blockers || []).map((blocker) => ({
+      timestampRaw: snapshot.evaluatedAt,
+      timestamp: formatDateTime(snapshot.evaluatedAt),
+      actor: 'Rule Engine',
+      action: `Created submission blocker: ${blocker.reason || 'Rule conditions must be resolved.'}`,
+    }))
+    const riskEntry = snapshot.computedMetrics?.baselineRisk !== snapshot.computedMetrics?.finalRiskLevel
+      ? [{
+        timestampRaw: snapshot.evaluatedAt,
+        timestamp: formatDateTime(snapshot.evaluatedAt),
+        actor: 'Rule Engine',
+        action: `Risk level changed from ${snapshot.computedMetrics?.baselineRisk} to ${snapshot.computedMetrics?.finalRiskLevel}.`,
+      }]
+      : []
+    const readinessEntry = snapshot.computedMetrics?.readinessPenalty > 0
+      ? [{
+        timestampRaw: snapshot.evaluatedAt,
+        timestamp: formatDateTime(snapshot.evaluatedAt),
+        actor: 'Rule Engine',
+        action: `Readiness adjusted by rule penalty of ${snapshot.computedMetrics.readinessPenalty} point(s).`,
+      }]
+      : []
+
+    return [...triggeredEntries, ...requiredDocEntries, ...blockerEntries, ...riskEntry, ...readinessEntry]
+  })
+
+  const ruleDocumentUploadEntries = (caseFile?.documents || [])
+    .filter((document) => document.uploadedAt && document.uploadedForRuleRequirement)
+    .map((document) => ({
+      timestampRaw: document.uploadedAt,
+      timestamp: formatDateTime(document.uploadedAt),
+      actor: 'RM',
+      action: `Uploaded rule-required document ${normalizeUploadedCategory(document.category) || document.name}.`,
+    }))
+
+  return [...statusEntries, ...documentEntries, ...ruleDocumentUploadEntries, ...analysisEntry, ...submissionEntry, ...ruleEntries, ...ruleDetailEntries, ...resolvedBlockerEntries]
     .filter((entry) => entry.timestampRaw)
     .sort((a, b) => Date.parse(b.timestampRaw || '') - Date.parse(a.timestampRaw || ''))
 }
@@ -672,13 +1008,14 @@ function SectionCard({ title, description, icon: Icon, children, action }) {
   )
 }
 
-export default function CaseDetail({ onNavigate }) {
+export default function CaseDetail({ onNavigate, role = 'ops' }) {
   const [caseFile, setCaseFile] = useState(null)
   const [loading, setLoading] = useState(true)
   const [submitting, setSubmitting] = useState(false)
   const [message, setMessage] = useState('')
   const [selectedCategory, setSelectedCategory] = useState('')
   const [uploadTargetType, setUploadTargetType] = useState('')
+  const [uploadSuggestionContext, setUploadSuggestionContext] = useState(null)
   const [uploading, setUploading] = useState(false)
   const [sowDraftText, setSowDraftText] = useState('')
   const [analysisStatus, setAnalysisStatus] = useState('not-run')
@@ -688,12 +1025,24 @@ export default function CaseDetail({ onNavigate }) {
   const [copied, setCopied] = useState(false)
   const [readinessSummary, setReadinessSummary] = useState(null)
   const documentInputRef = useRef(null)
+  const uploadSuggestionContextRef = useRef(null)
+  const autoRuleRunCaseRef = useRef(null)
 
   const requiredDocumentGroups = useMemo(() => getDocumentTypeGroups(caseFile), [caseFile?.occupation, caseFile?.id])
   const requiredDocumentOptions = useMemo(
     () => requiredDocumentGroups.flatMap((group) => group.options),
     [requiredDocumentGroups],
   )
+  const visibleTabs = useMemo(
+    () => tabs.filter((tab) => role !== 'rm' || !tab.complianceOnly),
+    [role],
+  )
+
+  useEffect(() => {
+    if (role === 'rm' && activeTab === 'applied-rules') {
+      setActiveTab('overview')
+    }
+  }, [role, activeTab])
 
   const handleCopyCaseId = async () => {
     if (!caseFile?.id || typeof navigator === 'undefined' || !navigator.clipboard) return
@@ -716,8 +1065,23 @@ export default function CaseDetail({ onNavigate }) {
     let isMounted = true
 
     const loadCase = async () => {
-      const activeCase = await refreshCase()
+      let activeCase = await refreshCase()
       if (!isMounted) return
+
+      if (activeCase?.id && autoRuleRunCaseRef.current !== activeCase.id && shouldAutoRunRulesForCase(activeCase)) {
+        autoRuleRunCaseRef.current = activeCase.id
+        const result = await rerunRuleEvaluation(activeCase.id, {
+          triggeredBy: 'case-open-auto',
+          evaluatedBy: 'Rule Engine',
+        })
+        if (!isMounted) return
+        if (result.ok && result.caseFile) {
+          activeCase = result.caseFile
+          setCaseFile(result.caseFile)
+          setReadinessSummary(calculateReadinessScore(result.caseFile))
+          setMessage('Compliance rules refreshed automatically for this case.')
+        }
+      }
 
       const initialDraft = formatAiText(
         activeCase?.sowDraft?.narrativeSummary,
@@ -769,6 +1133,9 @@ export default function CaseDetail({ onNavigate }) {
         extraDocuments: [],
         missingRequiredDocuments: [],
         needsReviewDocuments: [],
+        ruleRequiredDocuments: [],
+        missingRuleRequiredDocuments: [],
+        ruleBlockers: [],
         uploadedRequiredCount: 0,
         missingRequiredCount: 0,
         needsReviewCount: 0,
@@ -854,14 +1221,25 @@ export default function CaseDetail({ onNavigate }) {
       })
       : fallbackAnalysisData
 
+    const openNormalizedActions = buildNormalizedSuggestedActions(normalizedAnalysisData.suggestions, caseFile)
+    const openHighMissingEvidence = normalizedAnalysisData.missingSupportingEvidence.some((item) => {
+      const actionText = `${item.document} ${item.issue} ${item.reason}`
+      const evidenceCategory = getEvidenceCategoryForText(actionText)
+      const isCovered = evidenceCategory ? getUploadedEvidenceForCategory(caseFile, evidenceCategory).length > 0 : false
+      return getActionPriority(actionText) === 'High' && !isCovered
+    })
+    const openMismatches = normalizedAnalysisData.mismatches.filter((mismatch) => {
+      const evidenceCategory = getEvidenceCategoryForText(mismatch)
+      return !getUploadedEvidenceForCategory(caseFile, evidenceCategory).length
+    })
     const hasHighSeverityIssue = normalizedAnalysisData.risks.some((risk) => String(risk.severity || '').toLowerCase() === 'high')
       || normalizedAnalysisData.risks.some((risk) => String(risk.severity || '').toLowerCase() === 'critical')
-      || normalizedAnalysisData.mismatches.some((mismatch) => String(mismatch.severity || '').toLowerCase() === 'high')
-    const hasHighPriorityFollowUp = normalizedAnalysisData.suggestions.some((suggestion) => getActionPriority(suggestion) === 'High')
-      || normalizedAnalysisData.missingSupportingEvidence.some((item) => getActionPriority(`${item.document} ${item.issue} ${item.reason}`) === 'High')
+      || openMismatches.some((mismatch) => String(mismatch.severity || '').toLowerCase() === 'high')
+    const hasHighPriorityFollowUp = openNormalizedActions.some((action) => action.priority === 'High' && action.uploadedCount === 0)
+      || openHighMissingEvidence
     const riskLevel = readinessSummary?.rules?.riskLevel || ruleSnapshot?.computedMetrics?.finalRiskLevel || deriveRiskLevel({
       missingCategories,
-      mismatches: normalizedAnalysisData.mismatches,
+      mismatches: openMismatches,
       riskFlags: hasHighPriorityFollowUp
         ? [...normalizedAnalysisData.risks, { title: 'High-priority follow-up evidence required', severity: 'High' }]
         : normalizedAnalysisData.risks,
@@ -869,7 +1247,7 @@ export default function CaseDetail({ onNavigate }) {
     })
     let nextAction = 'Review case details and proceed with the next workflow step.'
     if (missingCategories.length > 0) nextAction = 'Resolve missing documents before compliance handoff.'
-    else if (hasHighSeverityIssue || hasHighPriorityFollowUp || normalizedAnalysisData.mismatches.length > 0) nextAction = 'Resolve high-priority AI findings before submission.'
+    else if (hasHighSeverityIssue || hasHighPriorityFollowUp || openMismatches.length > 0) nextAction = 'Resolve high-priority AI findings before submission.'
     else if (readiness < 100) nextAction = 'Review extracted data and finalize the SoW draft.'
     else nextAction = 'Submit for compliance review.'
     let riskClearanceReason = 'Risk checks are cleared.'
@@ -916,6 +1294,9 @@ export default function CaseDetail({ onNavigate }) {
       extraDocuments: completionSummary.extraDocuments,
       missingRequiredDocuments: completionSummary.missingRequiredDocuments,
       needsReviewDocuments: completionSummary.needsReviewDocuments,
+      ruleRequiredDocuments: completionSummary.ruleRequiredDocuments,
+      missingRuleRequiredDocuments: completionSummary.missingRuleRequiredDocuments,
+      ruleBlockers: readinessSummary?.rules?.blockers || ruleSnapshot?.aggregatedActions?.blockers || [],
       uploadedRequiredCount: completionSummary.uploadedRequiredCount,
       missingRequiredCount: completionSummary.missingRequiredCount,
       needsReviewCount: completionSummary.needsReviewCount,
@@ -941,11 +1322,13 @@ export default function CaseDetail({ onNavigate }) {
       return severity === 'high' || severity === 'critical'
     })
   const aiAnalysisCompleted = hasFreshAiAnalysis(caseFile)
+  const hasRuleBlockers = derived.ruleBlockers.length > 0
   const canSubmit = Boolean(caseFile)
     && hasRequiredFields(caseFile)
     && derived.missingCategories.length === 0
     && aiAnalysisCompleted
     && !hasCriticalRiskFlags
+    && !hasRuleBlockers
     && derived.readinessBreakdown.risk.cleared
   const handleSubmit = async () => {
     if (!caseFile || !canSubmit) return
@@ -973,7 +1356,7 @@ export default function CaseDetail({ onNavigate }) {
 
     setCaseFile(result.caseFile)
     setReadinessSummary(calculateReadinessScore(result.caseFile))
-    setMessage('Case submitted successfully. Status updated to Pending Review.')
+    setMessage('Case submitted successfully. Status updated to Submitted for Review.')
     setSubmitting(false)
   }
 
@@ -989,9 +1372,11 @@ export default function CaseDetail({ onNavigate }) {
     setMessage('Rule evaluation snapshot refreshed.')
   }
 
-  const triggerUploadForType = (documentType) => {
+  const triggerUploadForType = (documentType, suggestionContext = null) => {
     if (!documentType) return
     setUploadTargetType(documentType)
+    uploadSuggestionContextRef.current = suggestionContext
+    setUploadSuggestionContext(suggestionContext)
     if (documentInputRef.current) {
       documentInputRef.current.click()
     }
@@ -1007,6 +1392,8 @@ export default function CaseDetail({ onNavigate }) {
     setMessage('')
 
     try {
+      const activeSuggestionContext = uploadSuggestionContextRef.current || uploadSuggestionContext
+      const targetRequiredDocument = derived.requiredDocuments.find((item) => item.label === targetCategory)
       let extractedDocuments = []
       try {
         const extractionResult = await extractDocumentText(files)
@@ -1032,6 +1419,7 @@ export default function CaseDetail({ onNavigate }) {
 
         await addDocumentToCase(caseFile.id, {
           id: documentId,
+          caseId: caseFile.id,
           name: file.name,
           size: `${(file.size / 1024 / 1024).toFixed(1)} MB`,
           category: targetCategory,
@@ -1040,6 +1428,13 @@ export default function CaseDetail({ onNavigate }) {
           mimeType: extracted.mimeType || file.type || '',
           storagePath: storageMeta.storagePath || null,
           downloadURL: storageMeta.downloadURL || null,
+          suggestedActionId: activeSuggestionContext?.suggestedActionId || null,
+          suggestedActionText: activeSuggestionContext?.text || null,
+          evidenceCategory: activeSuggestionContext?.evidenceCategory
+            || getEvidenceCategoryForText(`${targetCategory} ${file.name} ${extracted.text || ''}`),
+          uploadedForSuggestion: Boolean(activeSuggestionContext?.suggestedActionId),
+          uploadedForRuleRequirement: Boolean(targetRequiredDocument?.ruleDriven),
+          ruleRequirementSource: targetRequiredDocument?.sources?.[0]?.ruleName || targetRequiredDocument?.reason || null,
           uploadedAt: new Date().toISOString(),
         })
       }
@@ -1053,6 +1448,8 @@ export default function CaseDetail({ onNavigate }) {
       setMessage(error?.message ? `Upload failed: ${error.message}` : 'Upload failed unexpectedly. Check backend/Firebase logs.')
     } finally {
       setUploadTargetType('')
+      uploadSuggestionContextRef.current = null
+      setUploadSuggestionContext(null)
       setUploading(false)
       event.target.value = ''
     }
@@ -1160,10 +1557,9 @@ export default function CaseDetail({ onNavigate }) {
       console.error('Error running AI analysis:', error)
       const hasPreviousAnalysis = Boolean(analysisSnapshot || caseFile?.aiAnalysis)
       setAnalysisStatus(hasPreviousAnalysis ? 'completed' : 'failed')
+      const friendlyMessage = getFriendlyAiErrorMessage(error)
       setMessage(
-        error?.message
-          ? `Latest AI analysis failed: ${error.message}${hasPreviousAnalysis ? ' Previous completed analysis is still shown.' : ''}`
-          : `Latest AI analysis failed. Check that the Groq backend is running and your GROQ_API_KEY is set.${hasPreviousAnalysis ? ' Previous completed analysis is still shown.' : ''}`,
+        `Latest AI analysis failed: ${friendlyMessage}${hasPreviousAnalysis ? ' Previous completed analysis is still shown.' : ''}`,
       )
     }
   }
@@ -1259,7 +1655,7 @@ export default function CaseDetail({ onNavigate }) {
                   { label: 'Nationality', value: caseFile.nationality || '--', icon: Globe2 },
                   { label: 'Country of Residence', value: caseFile.residence || '--', icon: Globe2 },
                   { label: 'Occupation', value: caseFile.occupation || '--', icon: Briefcase },
-                  { label: 'Net Worth', value: formatCurrencyLikeNumber(caseFile.netWorth), icon: Building2 },
+                  { label: 'Net Worth', value: `${caseFile.netWorthCurrency || 'USD'} ${formatCurrencyLikeNumber(caseFile.netWorth)}`, icon: Building2 },
                   { label: 'Risk Level', value: derived.riskLevel, icon: ShieldAlert, tone: getRiskTone(derived.riskLevel) },
                 ].map((item) => {
                   const Icon = item.icon
@@ -1291,6 +1687,9 @@ export default function CaseDetail({ onNavigate }) {
 
     const renderDocuments = () => {
     const requiredDocSet = new Set(derived.requiredDocuments.map((item) => item.label))
+    const hasRuleRequiredDocuments = derived.ruleRequiredDocuments.length > 0
+    const hasMissingRuleRequiredDocuments = derived.missingRuleRequiredDocuments.length > 0
+    const hasRuleBlockers = derived.ruleBlockers.length > 0
     const uploadedDocuments = (caseFile.documents || []).map((doc) => {
       const normalizedCategory = normalizeUploadedCategory(doc.category)
       const requiredDoc = derived.requiredDocuments.find((item) => item.label === normalizedCategory)
@@ -1315,6 +1714,17 @@ export default function CaseDetail({ onNavigate }) {
 
     return (
       <SectionCard title="Documents" description="Upload files, review evidence, and check required categories." icon={FileText}>
+        {hasRuleRequiredDocuments ? (
+          <div className="mb-4 rounded-2xl border border-warning/20 bg-warning/5 px-4 py-3">
+            <p className="text-sm font-semibold text-on-surface">Additional documents are required due to compliance rules.</p>
+            {hasRuleBlockers || hasMissingRuleRequiredDocuments ? (
+              <p className="mt-1 text-sm text-warning">Submission is blocked until all rule-required documents are uploaded.</p>
+            ) : (
+              <p className="mt-1 text-sm text-on-surface-variant">All rule-required documents have evidence uploaded.</p>
+            )}
+          </div>
+        ) : null}
+
         <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-6">
           <div className="rounded-2xl border border-outline/10 bg-surface px-4 py-4">
             <p className="text-xs uppercase tracking-[0.14em] text-on-surface-variant">Required Documents</p>
@@ -1351,6 +1761,13 @@ export default function CaseDetail({ onNavigate }) {
                             <div>
                               <p className="text-sm font-medium text-on-surface">{item.label}</p>
                               <p className="text-xs text-on-surface-variant">{item.category}</p>
+                              {item.ruleDriven ? (
+                                <div className="mt-2 space-y-1 text-xs text-on-surface-variant">
+                                  <p><span className="font-semibold text-on-surface">Source:</span> {item.sourceLabel || 'Rule-Based Compliance Engine'}</p>
+                                  <p><span className="font-semibold text-on-surface">Reason:</span> {item.sources?.[0]?.ruleName || item.reason || 'Required by active compliance rule.'}</p>
+                                  {item.policyReference ? <p><span className="font-semibold text-on-surface">Policy:</span> {item.policyReference}</p> : null}
+                                </div>
+                              ) : null}
                             </div>
                             <span className={`inline-flex rounded-full px-2.5 py-1 text-xs font-semibold ${statusTone(badge)}`}>
                               {badge}
@@ -1425,6 +1842,12 @@ export default function CaseDetail({ onNavigate }) {
                     <div key={item.key} className="rounded-xl border border-error/20 bg-error/5 p-3">
                       <p className="text-sm font-semibold text-on-surface">{item.label}</p>
                       <p className="mt-1 text-xs text-on-surface-variant">{item.missingReason}</p>
+                      {item.ruleDriven ? (
+                        <div className="mt-2 space-y-1 text-xs text-on-surface-variant">
+                          <p><span className="font-semibold text-on-surface">Source:</span> {item.sourceLabel || 'Rule-Based Compliance Engine'}</p>
+                          <p><span className="font-semibold text-on-surface">Reason:</span> {item.sources?.[0]?.ruleName || item.reason || 'Required by active compliance rule.'}</p>
+                        </div>
+                      ) : null}
                       <button
                         onClick={() => triggerUploadForType(item.label)}
                         className="mt-3 rounded-lg bg-primary px-3 py-1.5 text-xs font-semibold text-white hover:bg-primary/90"
@@ -1460,21 +1883,45 @@ export default function CaseDetail({ onNavigate }) {
       )}
     >
       {(() => {
-        const visibleActions = Array.from(new Map(
-          derived.analysisData.suggestions
-            .map((suggestion) => ({
-              text: formatAiText(suggestion, ''),
-              priority: getActionPriority(suggestion),
-              uploadType: getUploadTypeForAction(suggestion),
-            }))
-            .filter((action) => action.text && action.priority !== 'Low')
-            .map((action) => ({
-              ...action,
-              uploadedCount: getUploadedEvidenceCount(caseFile, action.uploadType),
-              evidenceLabel: action.priority === 'High' ? 'Evidence needed' : 'Recommended',
-            }))
-            .map((action) => [action.text.toLowerCase(), action]),
-        ).values())
+        const aiHasRun = Boolean(analysisSnapshot || caseFile?.aiAnalysis)
+        if (!aiHasRun) {
+          return (
+            <>
+              <div className="mb-6 rounded-2xl border border-outline/10 bg-surface p-4">
+                <div className="grid grid-cols-1 gap-4 xl:grid-cols-[220px_minmax(0,1fr)]">
+                  <div className="grid grid-cols-2 gap-3 xl:grid-cols-1">
+                    <div className="rounded-xl bg-surface-container-lowest px-4 py-3">
+                      <p className="text-[11px] uppercase tracking-[0.16em] text-on-surface-variant mb-2">Status</p>
+                      <span className={`inline-flex items-center rounded-full px-3 py-1 text-xs font-semibold ${analysisStatusTone}`}>
+                        {analysisStatus === 'processing' ? 'Processing' : analysisStatus === 'failed' ? 'Failed' : 'Not Run'}
+                      </span>
+                    </div>
+                    <div className="rounded-xl bg-surface-container-lowest px-4 py-3">
+                      <p className="text-[11px] uppercase tracking-[0.16em] text-on-surface-variant mb-2">Last Analyzed</p>
+                      <p className="text-sm font-semibold text-on-surface">--</p>
+                    </div>
+                  </div>
+
+                  <div className="rounded-xl bg-surface-container-lowest px-4 py-3">
+                    <p className="text-[11px] uppercase tracking-[0.16em] text-on-surface-variant mb-2">Evidence Confidence</p>
+                    <p className="max-w-2xl text-sm leading-6 text-on-surface-variant">
+                      AI confidence will appear after analysis runs on uploaded document text.
+                    </p>
+                  </div>
+                </div>
+              </div>
+
+              <div className="rounded-2xl border border-outline/10 bg-surface p-6">
+                <p className="text-sm font-semibold text-on-surface">No AI analysis yet.</p>
+                <p className="mt-2 text-sm leading-6 text-on-surface-variant">
+                  Run AI Analysis to extract document data, detect mismatches, and generate suggested follow-up actions.
+                </p>
+              </div>
+            </>
+          )
+        }
+
+        const visibleActions = buildNormalizedSuggestedActions(derived.analysisData.suggestions, caseFile)
 
         return (
           <>
@@ -1586,7 +2033,7 @@ export default function CaseDetail({ onNavigate }) {
             <div className="space-y-3">
               {visibleActions.length > 0 ? visibleActions.map((action) => (
                 <div
-                  key={action.text}
+                  key={action.suggestedActionId}
                   className={`rounded-xl border px-4 py-3 ${
                     action.uploadedCount > 0
                       ? 'border-success/15 bg-success/5'
@@ -1604,21 +2051,40 @@ export default function CaseDetail({ onNavigate }) {
                           <span className={`rounded-full px-2.5 py-1 text-xs font-semibold ${
                             action.uploadedCount > 0 ? 'bg-success/12 text-success' : 'bg-surface text-on-surface-variant'
                           }`}>
-                            {action.uploadedCount > 0 ? `Uploaded (${action.uploadedCount})` : action.evidenceLabel}
+                            {action.evidenceLabel}
                           </span>
                         ) : null}
                       </div>
-                      <p className="mt-2 text-sm leading-6 text-on-surface">{action.text}</p>
+                      <p className="mt-2 text-sm font-semibold leading-6 text-on-surface">{action.title}</p>
+                      <p className="mt-1 text-sm leading-6 text-on-surface-variant">{action.text}</p>
+                      {action.coveredDocuments?.length > 0 ? (
+                        <div className="mt-2 rounded-lg border border-success/10 bg-success/5 px-3 py-2">
+                          <p className="text-xs font-semibold text-success">Covered by uploaded evidence</p>
+                          <p className="mt-1 text-xs text-on-surface-variant">
+                            File: {getUniqueEvidenceFileNames(action.coveredDocuments).join(', ')}
+                          </p>
+                        </div>
+                      ) : null}
+                      {action.relatedSuggestions?.length > 1 ? (
+                        <p className="mt-2 text-xs text-on-surface-variant">
+                          Merged {action.relatedSuggestions.length} similar AI suggestions for this evidence.
+                        </p>
+                      ) : null}
                       {action.uploadType ? (
                         <button
-                          onClick={() => triggerUploadForType(action.uploadType)}
+                          onClick={() => triggerUploadForType(action.uploadType, {
+                            suggestedActionId: action.suggestedActionId,
+                            text: action.text,
+                            evidenceCategory: action.evidenceCategory,
+                          })}
+                          disabled={action.uploadedCount > 0}
                           className={`mt-3 rounded-lg px-3 py-1.5 text-xs font-semibold transition-colors ${
                             action.uploadedCount > 0
-                              ? 'border border-outline/20 bg-surface text-on-surface hover:border-primary/30'
+                              ? 'cursor-not-allowed border border-success/15 bg-success/5 text-success'
                               : 'bg-primary text-white hover:bg-primary/90'
                           }`}
                         >
-                          {action.uploadedCount > 0 ? 'Replace evidence' : action.priority === 'High' ? 'Upload evidence' : 'Upload optional evidence'}
+                          {action.uploadedCount > 0 ? 'Evidence already uploaded' : action.priority === 'High' ? 'Upload evidence' : 'Upload optional evidence'}
                         </button>
                       ) : null}
                     </div>
@@ -1631,10 +2097,18 @@ export default function CaseDetail({ onNavigate }) {
               )}
               {derived.analysisData.missingSupportingEvidence
                 .filter((item) => getActionPriority(`${item.document} ${item.issue} ${item.reason}`) === 'High')
-                .map((item) => (
+                .map((item, index) => (
                 (() => {
-                  const uploadedCount = getUploadedEvidenceCount(caseFile, item.document)
-                  const priority = getActionPriority(`${item.document} ${item.issue} ${item.reason}`)
+                  const actionText = `${item.document} ${item.issue} ${item.reason}`
+                  const evidenceCategory = getEvidenceCategoryForText(actionText)
+                  const coveredDocuments = getUploadedEvidenceForCategory(caseFile, evidenceCategory)
+                  const suggestedActionId = evidenceCategory
+                    ? `missing_evidence_${evidenceCategory}`
+                    : buildSuggestedActionId(actionText, index, 'missing_evidence')
+                  const uploadedCount = evidenceCategory
+                    ? coveredDocuments.length
+                    : getUploadedEvidenceCount(caseFile, item.document, suggestedActionId)
+                  const priority = getActionPriority(actionText)
                   return (
                 <div key={item.id} className={`rounded-xl border px-4 py-3 ${uploadedCount > 0 ? 'border-success/15 bg-success/5' : 'border-warning/20 bg-warning/5'}`}>
                   <div className="flex flex-wrap items-start justify-between gap-3">
@@ -1648,16 +2122,29 @@ export default function CaseDetail({ onNavigate }) {
                           {uploadedCount > 0 ? `Uploaded (${uploadedCount})` : 'Evidence needed'}
                         </span>
                       </div>
+                      {coveredDocuments.length > 0 ? (
+                        <div className="mt-2 rounded-lg border border-success/10 bg-success/5 px-3 py-2">
+                          <p className="text-xs font-semibold text-success">Covered by uploaded evidence</p>
+                          <p className="mt-1 text-xs text-on-surface-variant">
+                            File: {getUniqueEvidenceFileNames(coveredDocuments).join(', ')}
+                          </p>
+                        </div>
+                      ) : null}
                     </div>
                     <button
-                      onClick={() => triggerUploadForType(item.document)}
+                      onClick={() => triggerUploadForType(item.document, {
+                        suggestedActionId,
+                        text: actionText,
+                        evidenceCategory,
+                      })}
+                      disabled={uploadedCount > 0}
                       className={`rounded-lg px-3 py-1.5 text-xs font-semibold transition-colors ${
                         uploadedCount > 0
-                          ? 'border border-outline/20 bg-surface text-on-surface hover:border-primary/30'
+                          ? 'cursor-not-allowed border border-success/15 bg-success/5 text-success'
                           : 'bg-primary text-white hover:bg-primary/90'
                       }`}
                     >
-                      {uploadedCount > 0 ? 'Replace evidence' : 'Upload evidence'}
+                      {uploadedCount > 0 ? 'Evidence already uploaded' : 'Upload evidence'}
                     </button>
                   </div>
                   <p className="mt-1 text-sm text-on-surface-variant">{item.issue}</p>
@@ -1693,34 +2180,47 @@ export default function CaseDetail({ onNavigate }) {
     </SectionCard>
   )
 
-  const renderSowDraft = () => (
-    <SectionCard title="SoW Draft" description="Review and refine the source of wealth summary." icon={PencilLine}>
-      <div className="space-y-4">
-        <div className="rounded-2xl border border-outline/10 bg-surface p-4">
-          <p className="text-xs uppercase tracking-[0.16em] text-on-surface-variant mb-2">Primary Source of Wealth</p>
-          <p className="text-sm leading-6 text-on-surface">{derived.sowDraft.primarySource}</p>
-        </div>
-        <div className="rounded-2xl border border-outline/10 bg-surface p-4">
-          <p className="text-xs uppercase tracking-[0.16em] text-on-surface-variant mb-2">Supporting Evidence</p>
-          <p className="text-sm leading-6 text-on-surface">{derived.sowDraft.supportingEvidence}</p>
-        </div>
-        <div className="rounded-2xl border border-outline/10 bg-surface p-4">
-          <div className="flex items-center justify-between gap-3 mb-3">
-            <p className="text-xs uppercase tracking-[0.16em] text-on-surface-variant">Narrative Summary</p>
-            <span className={`inline-flex items-center rounded-full px-3 py-1 text-xs font-semibold ${getConfidenceTone(derived.sowDraft.confidence)}`}>
-              {derived.sowDraft.confidence} Confidence
-            </span>
+  const renderSowDraft = () => {
+    const aiHasRun = Boolean(analysisSnapshot || caseFile?.aiAnalysis)
+
+    return (
+      <SectionCard title="SoW Draft" description="Review and refine the source of wealth summary." icon={PencilLine}>
+        {!aiHasRun ? (
+          <div className="rounded-2xl border border-outline/10 bg-surface p-6">
+            <p className="text-sm font-semibold text-on-surface">No SoW draft yet.</p>
+            <p className="mt-2 text-sm leading-6 text-on-surface-variant">
+              Run AI Analysis to generate a source-of-wealth draft from uploaded document evidence.
+            </p>
           </div>
-          <textarea
-            value={sowDraftText}
-            onChange={(event) => setSowDraftText(event.target.value)}
-            rows={12}
-            className="w-full rounded-2xl border border-outline/15 bg-surface-container-low px-4 py-3 text-sm leading-6 text-on-surface focus:outline-none focus:ring-2 focus:ring-primary/20"
-          />
-        </div>
-      </div>
-    </SectionCard>
-  )
+        ) : (
+          <div className="space-y-4">
+            <div className="rounded-2xl border border-outline/10 bg-surface p-4">
+              <p className="text-xs uppercase tracking-[0.16em] text-on-surface-variant mb-2">Primary Source of Wealth</p>
+              <p className="text-sm leading-6 text-on-surface">{derived.sowDraft.primarySource}</p>
+            </div>
+            <div className="rounded-2xl border border-outline/10 bg-surface p-4">
+              <p className="text-xs uppercase tracking-[0.16em] text-on-surface-variant mb-2">Supporting Evidence</p>
+              <p className="text-sm leading-6 text-on-surface">{derived.sowDraft.supportingEvidence}</p>
+            </div>
+            <div className="rounded-2xl border border-outline/10 bg-surface p-4">
+              <div className="flex items-center justify-between gap-3 mb-3">
+                <p className="text-xs uppercase tracking-[0.16em] text-on-surface-variant">Narrative Summary</p>
+                <span className={`inline-flex items-center rounded-full px-3 py-1 text-xs font-semibold ${getConfidenceTone(derived.sowDraft.confidence)}`}>
+                  {derived.sowDraft.confidence} Confidence
+                </span>
+              </div>
+              <textarea
+                value={sowDraftText}
+                onChange={(event) => setSowDraftText(event.target.value)}
+                rows={12}
+                className="w-full rounded-2xl border border-outline/15 bg-surface-container-low px-4 py-3 text-sm leading-6 text-on-surface focus:outline-none focus:ring-2 focus:ring-primary/20"
+              />
+            </div>
+          </div>
+        )}
+      </SectionCard>
+    )
+  }
 
   const renderAppliedRules = () => {
     const snapshot = derived.ruleSnapshot
@@ -1827,13 +2327,8 @@ export default function CaseDetail({ onNavigate }) {
       : []
     const realMismatches = aiHasRun ? derived.analysisData.mismatches : []
     const highPriorityActions = aiHasRun
-      ? derived.analysisData.suggestions
-        .map((suggestion) => ({
-          text: formatAiText(suggestion, ''),
-          priority: getActionPriority(suggestion),
-          uploadType: getUploadTypeForAction(suggestion),
-        }))
-        .filter((action) => action.text && action.priority === 'High')
+      ? buildNormalizedSuggestedActions(derived.analysisData.suggestions, caseFile)
+        .filter((action) => action.text && action.priority === 'High' && action.uploadedCount === 0)
       : []
     const blockers = [
       ...derived.missingRequiredDocuments.map((item) => ({
@@ -1862,11 +2357,13 @@ export default function CaseDetail({ onNavigate }) {
         action: risk.nextAction || 'Review and resolve this risk before submission.',
       })),
       ...highPriorityActions.map((action) => ({
-        title: 'High-priority AI follow-up',
+        title: action.title || 'High-priority AI follow-up',
         severity: 'High',
         description: action.text,
         action: action.uploadType ? 'Upload requested evidence.' : 'Resolve this follow-up before submission.',
         uploadType: action.uploadType,
+        suggestedActionId: action.suggestedActionId,
+        evidenceCategory: action.evidenceCategory,
       })),
     ]
 
@@ -1892,7 +2389,11 @@ export default function CaseDetail({ onNavigate }) {
                     </div>
                     {item.uploadType ? (
                       <button
-                        onClick={() => triggerUploadForType(item.uploadType)}
+                        onClick={() => triggerUploadForType(item.uploadType, item.suggestedActionId ? {
+                          suggestedActionId: item.suggestedActionId,
+                          text: item.description,
+                          evidenceCategory: item.evidenceCategory,
+                        } : null)}
                         className="rounded-lg bg-primary px-3 py-1.5 text-xs font-semibold text-white hover:bg-primary/90"
                       >
                         Upload
@@ -2024,6 +2525,9 @@ export default function CaseDetail({ onNavigate }) {
                 <span className={`inline-flex items-center rounded-full px-3 py-1 text-sm font-semibold ${getStatusBadge(caseFile.status)}`}>
                   {caseFile.status}
                 </span>
+                <p className="mt-2 text-[11px] leading-4 text-on-surface-variant">
+                  Owner: <span className="font-semibold text-on-surface">{getStatusOwner(caseFile)}</span>
+                </p>
               </div>
               <button
                 onClick={handleSubmit}
@@ -2070,15 +2574,59 @@ export default function CaseDetail({ onNavigate }) {
           ) : null}
           {!canSubmit ? (
             <div className="mt-3 rounded-2xl border border-outline/10 bg-surface px-4 py-3 text-xs text-on-surface-variant">
-              Submit disabled until profile is valid, all required document categories are complete, AI analysis has run after the latest upload, and no high/critical risk flags remain.
+              {hasRuleBlockers
+                ? 'Submit disabled because a compliance rule created a submission blocker. Upload all rule-required documents and re-run rules.'
+                : 'Submit disabled until profile is valid, all required document categories are complete, AI analysis has run after the latest upload, and no high/critical risk flags remain.'}
             </div>
           ) : null}
+
+          <div className="mt-4 rounded-2xl border border-outline/10 bg-surface px-4 py-4">
+            <div className="flex flex-wrap items-center justify-between gap-3">
+              <p className="text-xs uppercase tracking-[0.16em] text-on-surface-variant">Status Timeline</p>
+              <p className="text-xs text-on-surface-variant">Current owner: <span className="font-semibold text-on-surface">{getStatusOwner(caseFile)}</span></p>
+            </div>
+            <div className="mt-4 grid grid-cols-1 gap-2 md:grid-cols-6">
+              {STATUS_TIMELINE.map((status, index) => {
+                const currentIndex = getStatusTimelineIndex(caseFile.status)
+                const isCurrent = status === caseFile.status
+                const isDone = index < currentIndex
+                return (
+                  <div
+                    key={status}
+                    className={`rounded-xl border px-3 py-3 ${
+                      isCurrent
+                        ? 'border-primary/25 bg-primary/10 text-primary'
+                        : isDone
+                          ? 'border-success/15 bg-success/5 text-success'
+                          : 'border-outline/10 bg-surface-container-lowest text-on-surface-variant'
+                    }`}
+                  >
+                    <p className="text-xs font-semibold">{status}</p>
+                  </div>
+                )
+              })}
+            </div>
+            {caseFile.status === CASE_STATUS.ACTION_REQUIRED ? (
+              <p className="mt-3 text-xs text-warning">Returned to RM for missing documents, rejected evidence, clarifications, AI follow-up, or unresolved rule blockers.</p>
+            ) : null}
+            {caseFile.status === CASE_STATUS.ESCALATED ? (
+              <div className="mt-3 rounded-xl bg-error/5 px-3 py-3 text-xs text-on-surface-variant">
+                <p><span className="font-semibold text-on-surface">Escalation reason:</span> {caseFile.escalationReason || 'Not recorded'}</p>
+                <p><span className="font-semibold text-on-surface">Escalated by:</span> {caseFile.escalatedBy || 'Compliance'}</p>
+                <p><span className="font-semibold text-on-surface">Escalated time:</span> {formatDateTime(caseFile.escalatedAt)}</p>
+                <p><span className="font-semibold text-on-surface">Senior owner:</span> {caseFile.seniorComplianceOwner || 'Senior Compliance'}</p>
+              </div>
+            ) : null}
+            {caseFile.status === CASE_STATUS.REJECTED ? (
+              <p className="mt-3 text-xs text-error">Rejected: {caseFile.complianceDecision?.note || 'Decision notes required by Compliance.'}</p>
+            ) : null}
+          </div>
           </div>
         </div>
 
         <div className="sticky top-20 z-20 rounded-[28px] border border-outline/10 bg-surface-container-lowest/95 backdrop-blur shadow-ambient p-3">
           <div className="flex flex-wrap gap-2">
-            {tabs.map((tab) => (
+            {visibleTabs.map((tab) => (
               <button
                 key={tab.id}
                 onClick={() => setActiveTab(tab.id)}

@@ -14,7 +14,17 @@ import {
   CheckCircle2,
   Building
 } from 'lucide-react'
-import { clearActiveCaseId, createDraftCase, getActiveCaseId, getCaseFileById, setActiveCaseId, updateCaseCore } from '../lib/caseFiles'
+import {
+  NET_WORTH_MINIMUM_USD,
+  NET_WORTH_USD_RATES,
+  clearActiveCaseId,
+  createDraftCase,
+  getActiveCaseId,
+  getCaseFileById,
+  getNetWorthUsdValue,
+  setActiveCaseId,
+  updateCaseCore,
+} from '../lib/caseFiles'
 
 const emptyFormData = {
   clientName: '',
@@ -22,7 +32,16 @@ const emptyFormData = {
   residence: '',
   occupation: '',
   netWorth: '',
+  netWorthCurrency: 'USD',
   purpose: '',
+}
+
+const NET_WORTH_CURRENCIES = Object.keys(NET_WORTH_USD_RATES)
+
+function formatMinimumMessage(currency = 'USD') {
+  const rate = NET_WORTH_USD_RATES[currency] || NET_WORTH_USD_RATES.USD
+  const localMinimum = Math.ceil(NET_WORTH_MINIMUM_USD / rate)
+  return `Minimum net worth is USD ${NET_WORTH_MINIMUM_USD.toLocaleString('en-US')} equivalent (${currency} ${localMinimum.toLocaleString('en-US')}).`
 }
 
 export default function NewCase({ onNext, setClientData, setSowData, onNavigate }) {
@@ -31,7 +50,6 @@ export default function NewCase({ onNext, setClientData, setSowData, onNavigate 
   const [netWorthError, setNetWorthError] = useState('')
   const [submissionMessage, setSubmissionMessage] = useState('')
   const [loadingCase, setLoadingCase] = useState(true)
-  const minimumNetWorth = 3000000
 
   useEffect(() => {
     let isMounted = true
@@ -57,6 +75,7 @@ export default function NewCase({ onNext, setClientData, setSowData, onNavigate 
           residence: activeCase.residence || '',
           occupation: activeCase.occupation || '',
           netWorth: netWorthDigits ? Number(netWorthDigits).toLocaleString('en-US') : '',
+          netWorthCurrency: activeCase.netWorthCurrency || 'USD',
           purpose: activeCase.purpose || '',
         })
       } else {
@@ -77,6 +96,7 @@ export default function NewCase({ onNext, setClientData, setSowData, onNavigate 
     const normalizedFormData = {
       ...nextFormData,
       netWorth: String(nextFormData.netWorth || '').replace(/,/g, ''),
+      netWorthCurrency: nextFormData.netWorthCurrency || 'USD',
       estimatedWealth: String(nextFormData.netWorth || '').replace(/,/g, ''),
     }
 
@@ -101,8 +121,8 @@ export default function NewCase({ onNext, setClientData, setSowData, onNavigate 
     if (field === 'netWorth') {
       const digitsOnly = value.replace(/[^\d]/g, '')
       const formattedValue = digitsOnly ? Number(digitsOnly).toLocaleString('en-US') : ''
-      if (digitsOnly && Number(digitsOnly) < minimumNetWorth) {
-        setNetWorthError('Minimum net worth is 3,000,000.')
+      if (digitsOnly && getNetWorthUsdValue(digitsOnly, formData.netWorthCurrency) < NET_WORTH_MINIMUM_USD) {
+        setNetWorthError(formatMinimumMessage(formData.netWorthCurrency))
       } else {
         setNetWorthError('')
       }
@@ -110,6 +130,15 @@ export default function NewCase({ onNext, setClientData, setSowData, onNavigate 
         return { ...prev, [field]: formattedValue }
       })
       return
+    }
+
+    if (field === 'netWorthCurrency') {
+      const netWorthDigits = String(formData.netWorth || '').replace(/,/g, '')
+      if (netWorthDigits && getNetWorthUsdValue(netWorthDigits, value) < NET_WORTH_MINIMUM_USD) {
+        setNetWorthError(formatMinimumMessage(value))
+      } else {
+        setNetWorthError('')
+      }
     }
 
     setFormData((prev) => {
@@ -132,15 +161,16 @@ export default function NewCase({ onNext, setClientData, setSowData, onNavigate 
   }
 
   const handleSubmit = async () => {
-    const netWorthValue = Number(formData.netWorth.replace(/,/g, '') || 0)
-    if (netWorthValue < minimumNetWorth) {
-      setNetWorthError('Minimum net worth is 3,000,000.')
+    const netWorthValue = formData.netWorth.replace(/,/g, '') || 0
+    if (getNetWorthUsdValue(netWorthValue, formData.netWorthCurrency) < NET_WORTH_MINIMUM_USD) {
+      setNetWorthError(formatMinimumMessage(formData.netWorthCurrency))
       return
     }
 
     const normalizedFormData = {
       ...formData,
       netWorth: formData.netWorth.replace(/,/g, ''),
+      netWorthCurrency: formData.netWorthCurrency || 'USD',
       estimatedWealth: formData.netWorth.replace(/,/g, ''),
     }
 
@@ -265,20 +295,35 @@ export default function NewCase({ onNext, setClientData, setSowData, onNavigate 
                 <label className="text-[10px] font-semibold text-on-surface-variant tracking-wider uppercase mb-2 block">
                   Estimated Net Worth
                 </label>
-                <div className="relative">
-                  <DollarSign className="w-4 h-4 absolute left-4 top-1/2 -translate-y-1/2 text-on-surface-variant" />
+                <div className={`grid grid-cols-[104px_minmax(0,1fr)] overflow-hidden rounded-lg border bg-surface-container transition-all ${
+                  netWorthError ? 'border-error/50 focus-within:border-error/50' : 'border-transparent focus-within:border-primary/30'
+                }`}>
+                  <select
+                    value={formData.netWorthCurrency}
+                    onChange={(e) => handleInputChange('netWorthCurrency', e.target.value)}
+                    disabled={loadingCase}
+                    className="h-full bg-surface-container-high px-3 py-3 text-sm font-semibold text-on-surface focus:outline-none"
+                  >
+                    {NET_WORTH_CURRENCIES.map((currency) => (
+                      <option key={currency} value={currency}>{currency}</option>
+                    ))}
+                  </select>
+                  <div className="relative">
+                    <DollarSign className="w-4 h-4 absolute left-4 top-1/2 -translate-y-1/2 text-on-surface-variant" />
                   <input
                     type="text"
                     value={formData.netWorth}
                     onChange={(e) => handleInputChange('netWorth', e.target.value)}
                     placeholder="0.00"
                     disabled={loadingCase}
-                    className={`w-full pl-11 pr-4 py-3 bg-surface-container rounded-lg text-sm text-on-surface placeholder:text-on-surface-variant/50 focus:outline-none focus:ring-2 focus:ring-primary/20 border transition-all ${
-                      netWorthError ? 'border-error/50 focus:border-error/50' : 'border-transparent focus:border-primary/30'
-                    }`}
+                    className="w-full bg-transparent py-3 pl-11 pr-4 text-sm text-on-surface placeholder:text-on-surface-variant/50 focus:outline-none focus:ring-2 focus:ring-primary/20"
                   />
+                  </div>
                 </div>
-                  {netWorthError && <p className="mt-2 text-xs text-error">{netWorthError}</p>}
+                <p className="mt-2 text-xs text-on-surface-variant">
+                  Minimum: USD {NET_WORTH_MINIMUM_USD.toLocaleString('en-US')} equivalent.
+                </p>
+                {netWorthError && <p className="mt-2 text-xs text-error">{netWorthError}</p>}
               </div>
             </div>
             
