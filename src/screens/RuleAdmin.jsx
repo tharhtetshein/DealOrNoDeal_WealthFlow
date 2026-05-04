@@ -5,16 +5,16 @@ import { Input } from '../components/ui/input'
 import { Label } from '../components/ui/label'
 import {
   listRules,
-  publishRuleAsync,
-  archiveRuleAsync,
-  deleteRuleAsync,
-  upsertRuleAsync,
-  resetToDefaultRulesAsync,
-  loadRulesAsync,
+  createRuleDraft,
+  publishRule,
+  archiveRule,
+  deleteRule,
+  upsertRule,
+  resetToDefaultRules,
 } from '../lib/ruleStorage'
 import { evaluateRule, extractFacts, validateRule } from '../lib/ruleEngine'
 import { evaluateCaseRules } from '../lib/ruleEvaluation'
-import { getAllLocalCaseFiles } from '../lib/caseFiles'
+import { getAllCaseFiles } from '../lib/caseFiles'
 
 function Badge({ children, variant = 'default' }) {
   const styles = {
@@ -138,11 +138,10 @@ export default function RuleAdmin({ onBack }) {
   const [sandboxResult, setSandboxResult] = useState(null)
   const [cases, setCases] = useState([])
   const [notification, setNotification] = useState(null)
-  const [rulesLoading, setRulesLoading] = useState(true)
 
   useEffect(() => {
     refreshRules()
-    setCases(getAllLocalCaseFiles())
+    getAllCaseFiles().then(setCases).catch(() => setCases([]))
   }, [])
 
   useEffect(() => {
@@ -153,10 +152,8 @@ export default function RuleAdmin({ onBack }) {
   }, [notification])
 
   async function refreshRules() {
-    setRulesLoading(true)
-    await loadRulesAsync()
-    setRules(listRules())
-    setRulesLoading(false)
+    const nextRules = await listRules()
+    setRules(nextRules)
   }
 
   function showNotification(message, type = 'success') {
@@ -233,14 +230,14 @@ export default function RuleAdmin({ onBack }) {
       showNotification(`Validation failed: ${validation.errors.join(', ')}`, 'error')
       return
     }
-    await upsertRuleAsync(ruleToSave)
+    await upsertRule(ruleToSave)
     await refreshRules()
     showNotification(isEditing ? 'Rule updated' : 'Rule draft saved')
     setActiveTab('list')
   }
 
   async function handlePublishRule(id) {
-    const result = await publishRuleAsync(id, 'admin')
+    const result = await publishRule(id, 'admin')
     if (!result?.ok) {
       showNotification(`Publish blocked: ${(result?.errors || [result?.reason || 'rule is not publishable']).join(', ')}`, 'error')
       return
@@ -250,14 +247,14 @@ export default function RuleAdmin({ onBack }) {
   }
 
   async function handleArchiveRule(id, version) {
-    await archiveRuleAsync(id, version)
+    await archiveRule(id, version)
     await refreshRules()
     showNotification('Rule archived')
   }
 
   async function handleDeleteRule(id, version) {
     if (!window.confirm('Are you sure you want to delete this rule?')) return
-    const result = await deleteRuleAsync(id, version)
+    const result = await deleteRule(id, version)
     if (result && !result.ok) {
       showNotification(result.reason, 'error')
       return
@@ -268,12 +265,12 @@ export default function RuleAdmin({ onBack }) {
 
   async function handleResetDefaults() {
     if (!window.confirm('Reset all rules to system defaults? This will replace current rules.')) return
-    await resetToDefaultRulesAsync()
+    await resetToDefaultRules()
     await refreshRules()
     showNotification('Rules reset to defaults')
   }
 
-  function handleRunSandbox() {
+  async function handleRunSandbox() {
     if (!sandboxRule || !sandboxCase) {
       showNotification('Select both a rule and a case to test', 'error')
       return
@@ -286,11 +283,12 @@ export default function RuleAdmin({ onBack }) {
     }
     const facts = extractFacts(caseFile)
     const triggered = evaluateRule(rule, facts)
+    const evaluation = await evaluateCaseRules(caseFile, { baselineReadiness: 100, baselineRisk: 'Low' })
     setSandboxResult({
       rule,
       facts,
       triggered,
-      evaluation: evaluateCaseRules(caseFile, { baselineReadiness: 100, baselineRisk: 'Low' }),
+      evaluation,
       timestamp: new Date().toISOString(),
     })
   }
@@ -434,14 +432,14 @@ export default function RuleAdmin({ onBack }) {
                     <option value="Draft">Draft</option>
                     <option value="Archived">Archived</option>
                   </select>
-                  <span className="text-sm text-gray-500">{rulesLoading ? 'Loading rules...' : `${filteredRules.length} rules`}</span>
+                  <span className="text-sm text-gray-500">{filteredRules.length} rules</span>
                 </div>
               </CardContent>
             </Card>
 
             <div className="grid gap-4">
               {filteredRules.map((rule) => (
-                <Card key={`${rule.id}-${rule.version}`}>
+                <Card key={rule.id}>
                   <CardContent className="p-5">
                     <div className="flex items-start justify-between">
                       <div className="flex-1 min-w-0">

@@ -1,30 +1,21 @@
-// Rule Evaluation Integration - Phase 1
-// Bridges caseFiles.js with the rule engine. Computes snapshots.
-
-import { evaluateRules, isRuleEffective, extractFacts } from './ruleEngine'
+import { evaluateRules } from './ruleEngine'
 import { getActivePublishedRules } from './ruleStorage'
 
-const RULE_ENGINE_ENABLED = false // Feature flag: Phase 1 runs in shadow mode only
-
 export function shouldEvaluateRules() {
-  return RULE_ENGINE_ENABLED || true // Always evaluate for shadow logging in Phase 1
+  return true
 }
 
-export function getActiveRulesForEvaluation() {
+export async function getActiveRulesForEvaluation() {
   return getActivePublishedRules()
 }
 
-export function evaluateCaseRules(caseFile, options = {}) {
+export async function evaluateCaseRules(caseFile, options = {}) {
   if (!caseFile) return null
-  const rules = getActiveRulesForEvaluation()
-  // For shadow mode, compute baselines from existing logic
+  const rules = await getActiveRulesForEvaluation()
   const baselineRisk = options.baselineRisk || 'Low'
   const baselineReadiness = options.baselineReadiness ?? 0
 
-  const result = evaluateRules(caseFile, rules, { baselineRisk, baselineReadiness })
-
-  // Always return result for Phase 1 (shadow logging)
-  return result
+  return evaluateRules(caseFile, rules, { baselineRisk, baselineReadiness })
 }
 
 export function getRuleRequiredDocuments(caseFile) {
