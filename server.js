@@ -16,6 +16,7 @@ const upload = multer({ dest: 'uploads/' })
 const groq = new Groq({
   apiKey: process.env.GROQ_API_KEY
 })
+let groqCooldownUntil = 0
 
 app.use(cors())
 app.use(express.json())
@@ -43,7 +44,15 @@ Important rules:
 - Clearly indicate uncertainty when evidence is weak
 - Do NOT approve or reject cases
 - Support human decision-making only
-- Keep outputs clear, structured, and easy to scan`
+- Keep outputs clear, structured, and easy to scan
+
+Output rules:
+- Return ONLY one valid JSON object
+- Do not wrap the JSON in markdown fences
+- Do not include explanatory text before or after the JSON
+- Use double quotes for every JSON key and string value
+- Do not use trailing commas
+- Ensure every object and array is fully closed`
 
 function parseJsonResponse(content) {
   const cleaned = content
@@ -89,23 +98,94 @@ function buildDocumentsSummary(documents = []) {
     return 'UPLOADED DOCUMENTS\nNo document text provided.'
   }
 
-  const maxDocChars = 1800
-  const maxCombinedChars = 6000
+  const maxTxtDocChars = 12000
+  const maxOtherDocChars = 2500
+  const maxCombinedChars = 18000
   let remainingChars = maxCombinedChars
+  let omittedCount = 0
 
   return `UPLOADED DOCUMENTS
+Note: Plain .txt documents are included in full unless the total request would exceed model limits. Do not treat excerpt truncation as evidence that the uploaded document itself is incomplete. Only request a "full" or "complete" document if the provided text explicitly says the document is partial, missing pages, expired, invalid, or insufficient.
 ${documents.map((doc) => {
   if (remainingChars <= 0) {
+    omittedCount += 1
     return null
   }
 
   const rawText = String(doc.text || '').trim() || 'No extractable text found.'
-  const truncatedByDoc = rawText.slice(0, maxDocChars)
+  const isTxt = path.extname(doc.filename || '').toLowerCase() === '.txt'
+  const perDocLimit = isTxt ? maxTxtDocChars : maxOtherDocChars
+  const truncatedByDoc = rawText.slice(0, perDocLimit)
   const snippet = truncatedByDoc.slice(0, remainingChars)
   remainingChars -= snippet.length
+  const truncationNote = rawText.length > snippet.length
+    ? `\n[Excerpted by system: ${rawText.length - snippet.length} character(s) not sent due to request size limits.]`
+    : ''
 
-  return `--- ${doc.filename}${doc.category ? ` (${doc.category})` : ''} ---\n${snippet}`
-}).filter(Boolean).join('\n\n')}`
+  return `--- ${doc.filename}${doc.category ? ` (${doc.category})` : ''}${isTxt ? ' [TXT FULL-TEXT PRIORITY]' : ''} ---\n${snippet}${truncationNote}`
+}).filter(Boolean).join('\n\n')}${omittedCount > 0 ? `\n\n[${omittedCount} document(s) omitted because the combined request reached the safety limit.]` : ''}`
+}
+
+function getRetryAfterMs(error) {
+  const headerValue = error?.headers?.['retry-after'] || error?.headers?.get?.('retry-after')
+  const seconds = Number(headerValue)
+  if (Number.isFinite(seconds) && seconds > 0) return seconds * 1000
+
+  const message = error?.error?.error?.message || error?.message || ''
+  const minutesMatch = message.match(/try again in\s+(\d+)m(?:(\d+(?:\.\d+)?)s)?/i)
+  if (minutesMatch) {
+    return (Number(minutesMatch[1]) * 60 + Number(minutesMatch[2] || 0)) * 1000
+  }
+  const secondsMatch = message.match(/try again in\s+(\d+(?:\.\d+)?)s/i)
+  if (secondsMatch) return Number(secondsMatch[1]) * 1000
+  return 5 * 60 * 1000
+}
+
+function isGroqRateLimitError(error) {
+  return error?.status === 429 || error?.error?.error?.code === 'rate_limit_exceeded'
+}
+
+function buildRateLimitPayload(error = null) {
+  const waitMs = Math.max(0, groqCooldownUntil - Date.now())
+  const waitSeconds = Math.ceil(waitMs / 1000)
+  return {
+    error: 'AI analysis is temporarily unavailable',
+    code: 'groq_rate_limited',
+    retryAfterSeconds: waitSeconds,
+    retryAfterMinutes: Math.ceil(waitSeconds / 60),
+    details: `The AI provider token limit was reached. Try again in about ${Math.ceil(waitSeconds / 60)} minute(s).`,
+  }
+}
+
+async function createGroqCompletion(options) {
+  if (Date.now() < groqCooldownUntil) {
+    const error = new Error('Groq is cooling down after a rate limit response')
+    error.status = 429
+    error.rateLimitPayload = buildRateLimitPayload(error)
+    throw error
+  }
+
+  try {
+    return await groq.chat.completions.create(options)
+  } catch (error) {
+    if (isGroqRateLimitError(error)) {
+      const retryAfterMs = getRetryAfterMs(error)
+      groqCooldownUntil = Date.now() + retryAfterMs
+      error.rateLimitPayload = buildRateLimitPayload(error)
+    }
+    throw error
+  }
+}
+
+function sendGroqError(res, error, fallbackMessage) {
+  if (isGroqRateLimitError(error) || error?.rateLimitPayload) {
+    return res.status(429).json(error.rateLimitPayload || buildRateLimitPayload(error))
+  }
+
+  return res.status(500).json({
+    error: fallbackMessage,
+    details: error.message,
+  })
 }
 
 function buildAnalysisPrompt(clientData = {}, documents = []) {
@@ -148,10 +228,14 @@ Formatting requirements:
 - sourceOfWealthDraft must include primarySourceOfWealth, supportingEvidence, narrativeExplanation, confidence
 - riskFlags should include title, severity, description, rationale
 - suggestedActions should be a concise array of actionable recommendations
+- Do not create suggestedActions asking for documents that are already listed in UPLOADED DOCUMENTS unless the uploaded text explicitly shows the document is invalid, expired, wrong, or insufficient
+- Do not ask for a completed/full document merely because the provided excerpt is short or truncated
 - Only cite values that are supported by the provided text
 - If a field is not evidenced in the documents, set its value to null or an empty array instead of inventing it
 - If evidence is weak, explicitly state uncertainty
-- Do not approve or reject the case`
+- Do not approve or reject the case
+
+Return ONLY one valid JSON object. Do not include markdown, comments, trailing commas, or text outside the JSON object.`
 }
 
 // Create uploads directory if it doesn't exist
@@ -211,7 +295,7 @@ app.post('/api/analyze-documents', upload.array('documents'), async (req, res) =
 
     const prompt = buildAnalysisPrompt(clientData, documentTexts)
 
-    const completion = await groq.chat.completions.create({
+    const completion = await createGroqCompletion({
       messages: [
         {
           role: "system",
@@ -224,8 +308,9 @@ app.post('/api/analyze-documents', upload.array('documents'), async (req, res) =
       ],
       model: "openai/gpt-oss-120b",
       temperature: 0.3,
-      max_tokens: 3000,
+      max_tokens: 2500,
       top_p: 1,
+      response_format: { type: 'json_object' },
       stream: false
     })
 
@@ -239,10 +324,7 @@ app.post('/api/analyze-documents', upload.array('documents'), async (req, res) =
 
   } catch (error) {
     console.error('Error analyzing documents:', error)
-    res.status(500).json({ 
-      error: 'Failed to analyze documents',
-      details: error.message 
-    })
+    sendGroqError(res, error, 'Failed to analyze documents')
   }
 })
 
@@ -290,7 +372,7 @@ app.post('/api/analyze-case-documents', async (req, res) => {
 
     const prompt = buildAnalysisPrompt(clientData, documents)
 
-    const completion = await groq.chat.completions.create({
+    const completion = await createGroqCompletion({
       messages: [
         {
           role: 'system',
@@ -305,6 +387,7 @@ app.post('/api/analyze-case-documents', async (req, res) => {
       temperature: 0.2,
       max_tokens: 3000,
       top_p: 1,
+      response_format: { type: 'json_object' },
       stream: false,
     })
 
@@ -317,10 +400,7 @@ app.post('/api/analyze-case-documents', async (req, res) => {
     })
   } catch (error) {
     console.error('Error analyzing stored case documents:', error)
-    res.status(500).json({
-      error: 'Failed to analyze case documents',
-      details: error.message,
-    })
+    sendGroqError(res, error, 'Failed to analyze case documents')
   }
 })
 
@@ -354,7 +434,7 @@ CLIENT PROFILE
 - Declared source of wealth: ${clientData.primarySource || clientData.declaredSourceOfWealth || 'Not provided'}
 - Account purpose: ${clientData.purpose || clientData.accountPurpose || 'Not provided'}
 
-${documentText ? `DOCUMENT CONTENT:\n${documentText.substring(0, 12000)}` : ''}
+${documentText ? `DOCUMENT CONTENT:\n${documentText.substring(0, 3000)}` : ''}
 
 Return JSON with:
 - riskFlags: array of objects with id, title, description, severity, rationale
@@ -364,7 +444,7 @@ Return JSON with:
 
 Only identify risks supported by the provided profile or document content. If evidence is weak, say so clearly.`
 
-    const completion = await groq.chat.completions.create({
+    const completion = await createGroqCompletion({
       messages: [
         {
           role: "system",
@@ -377,8 +457,9 @@ Only identify risks supported by the provided profile or document content. If ev
       ],
       model: "openai/gpt-oss-120b",
       temperature: 0.2,
-      max_tokens: 8192,
+      max_tokens: 2000,
       top_p: 1,
+      response_format: { type: 'json_object' },
       stream: false
     })
 
@@ -394,10 +475,7 @@ Only identify risks supported by the provided profile or document content. If ev
 
   } catch (error) {
     console.error('Error detecting risks:', error)
-    res.status(500).json({ 
-      error: 'Failed to detect risks',
-      details: error.message 
-    })
+    sendGroqError(res, error, 'Failed to detect risks')
   }
 })
 
@@ -629,7 +707,7 @@ Write a polite, professional email requesting the missing documents. Include:
 
 Return ONLY the email body text, no subject line or signature placeholders.`
 
-    const completion = await groq.chat.completions.create({
+    const completion = await createGroqCompletion({
       messages: [
         {
           role: "system",
@@ -673,10 +751,7 @@ Return ONLY the email body text, no subject line or signature placeholders.`
     
   } catch (error) {
     console.error('Error generating follow-up:', error)
-    res.status(500).json({ 
-      error: 'Failed to generate follow-up email',
-      details: error.message 
-    })
+    sendGroqError(res, error, 'Failed to generate follow-up email')
   }
 })
 

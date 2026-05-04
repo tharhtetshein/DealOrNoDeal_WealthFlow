@@ -11,15 +11,15 @@ import {
   Search,
   ShieldAlert,
 } from 'lucide-react'
-import { clearActiveCaseId, getAllCaseFiles, getDocumentCompletionSummary, getReadinessScore, setActiveCaseId } from '../lib/caseFiles'
+import { CASE_STATUS, calculateReadinessScore, clearActiveCaseId, getAllCaseFiles, getDocumentCompletionSummary, setActiveCaseId } from '../lib/caseFiles'
 
-const statusOrder = ['Draft', 'Missing Documents', 'Pending Review', 'Under Review', 'Escalated', 'Action Required', 'Rejected', 'Approved']
+const statusOrder = [CASE_STATUS.DRAFT, CASE_STATUS.MISSING_DOCUMENTS, CASE_STATUS.READY_FOR_REVIEW, CASE_STATUS.PENDING_REVIEW, CASE_STATUS.UNDER_REVIEW, CASE_STATUS.ESCALATED, CASE_STATUS.ACTION_REQUIRED, CASE_STATUS.REJECTED, CASE_STATUS.APPROVED]
 
 const demoCases = [
   {
     id: 'WF-1102',
     clientName: 'Ariella Tan',
-    status: 'Draft',
+    status: CASE_STATUS.DRAFT,
     readinessScore: 34,
     lastUpdated: '4/21/2026',
     nextAction: 'Complete intake profile',
@@ -28,7 +28,7 @@ const demoCases = [
   {
     id: 'WF-1108',
     clientName: 'Marcus Lee',
-    status: 'Under Review',
+    status: CASE_STATUS.UNDER_REVIEW,
     readinessScore: 76,
     lastUpdated: '4/23/2026',
     nextAction: 'Review ownership structure and validate bank statements',
@@ -37,7 +37,7 @@ const demoCases = [
   {
     id: 'WF-1113',
     clientName: 'Isabelle Wong',
-    status: 'Pending Review',
+    status: CASE_STATUS.PENDING_REVIEW,
     readinessScore: 92,
     lastUpdated: '4/22/2026',
     nextAction: 'Review and submit for compliance',
@@ -46,7 +46,7 @@ const demoCases = [
   {
     id: 'WF-1116',
     clientName: 'Daniel Koh',
-    status: 'Missing Documents',
+    status: CASE_STATUS.MISSING_DOCUMENTS,
     readinessScore: 48,
     lastUpdated: '4/24/2026',
     nextAction: 'Upload utility bill and tax residency bill',
@@ -55,7 +55,7 @@ const demoCases = [
   {
     id: 'WF-1119',
     clientName: 'Nadia Aziz',
-    status: 'Escalated',
+    status: CASE_STATUS.ESCALATED,
     readinessScore: 63,
     lastUpdated: '4/20/2026',
     nextAction: 'Review sanctions screening note with compliance',
@@ -64,7 +64,7 @@ const demoCases = [
   {
     id: 'WF-1124',
     clientName: 'Celine Ong',
-    status: 'Approved',
+    status: CASE_STATUS.APPROVED,
     readinessScore: 100,
     lastUpdated: '4/18/2026',
     nextAction: 'No action required',
@@ -85,21 +85,23 @@ function formatDateTime(value) {
 
 function getStatusStyle(status) {
   switch (status) {
-    case 'Draft':
+    case CASE_STATUS.DRAFT:
       return 'bg-secondary text-secondary-foreground'
-    case 'Missing Documents':
+    case CASE_STATUS.MISSING_DOCUMENTS:
       return 'bg-warning/15 text-warning'
-    case 'Under Review':
-      return 'bg-tertiary/12 text-tertiary'
-    case 'Pending Review':
+    case CASE_STATUS.READY_FOR_REVIEW:
       return 'bg-success/12 text-success'
-    case 'Action Required':
+    case CASE_STATUS.UNDER_REVIEW:
+      return 'bg-tertiary/12 text-tertiary'
+    case CASE_STATUS.PENDING_REVIEW:
+      return 'bg-success/12 text-success'
+    case CASE_STATUS.ACTION_REQUIRED:
       return 'bg-warning/15 text-warning'
-    case 'Rejected':
+    case CASE_STATUS.REJECTED:
       return 'bg-error/10 text-error'
-    case 'Escalated':
+    case CASE_STATUS.ESCALATED:
       return 'bg-error/10 text-error'
-    case 'Approved':
+    case CASE_STATUS.APPROVED:
       return 'bg-success/20 text-success'
     default:
       return 'bg-surface-container-high text-on-surface-variant'
@@ -119,25 +121,27 @@ function getReadinessBarStyle(score) {
 }
 
 function deriveNextAction(status, missingCategoriesCount) {
-  if (status === 'Draft') return 'Complete intake profile'
-  if (status === 'Missing Documents') return missingCategoriesCount > 0 ? `Upload ${missingCategoriesCount} remaining required document${missingCategoriesCount > 1 ? 's' : ''}` : 'Upload required documents'
-  if (status === 'Pending Review') return 'Waiting for Compliance to start review'
-  if (status === 'Under Review') return 'Review and confirm case information by compliance'
-  if (status === 'Action Required') return 'Resolve Compliance feedback'
-  if (status === 'Rejected') return 'Review rejection reason'
-  if (status === 'Escalated') return 'Address flagged issues with compliance'
-  if (status === 'Approved') return 'No action required'
+  if (status === CASE_STATUS.DRAFT) return 'Complete intake profile'
+  if (status === CASE_STATUS.MISSING_DOCUMENTS) return missingCategoriesCount > 0 ? `Upload ${missingCategoriesCount} remaining required document${missingCategoriesCount > 1 ? 's' : ''}` : 'Upload required documents'
+  if (status === CASE_STATUS.READY_FOR_REVIEW) return 'Submit for compliance review'
+  if (status === CASE_STATUS.PENDING_REVIEW) return 'Waiting for Compliance to start review'
+  if (status === CASE_STATUS.UNDER_REVIEW) return 'Compliance review in progress'
+  if (status === CASE_STATUS.ACTION_REQUIRED) return 'Resolve Compliance feedback'
+  if (status === CASE_STATUS.REJECTED) return 'Review rejection reason'
+  if (status === CASE_STATUS.ESCALATED) return 'Address flagged issues with compliance'
+  if (status === CASE_STATUS.APPROVED) return 'No action required'
   return 'Open case and review'
 }
 
 function deriveIssues(status, missingCategories) {
-  if (status === 'Escalated') return 'High-priority issue flagged for RM follow-up'
+  if (status === CASE_STATUS.ESCALATED) return 'High-priority issue flagged for RM follow-up'
   if (missingCategories.length > 0) return `Missing: ${missingCategories.slice(0, 2).join(', ')}${missingCategories.length > 2 ? ` +${missingCategories.length - 2} more` : ''}`
-  if (status === 'Pending Review') return 'Documentation complete and waiting in Compliance queue'
-  if (status === 'Under Review') return 'Compliance review in progress'
-  if (status === 'Action Required') return 'Compliance requested additional information'
-  if (status === 'Rejected') return 'Case rejected by Compliance'
-  if (status === 'Approved') return 'Case approved and archived'
+  if (status === CASE_STATUS.READY_FOR_REVIEW) return 'Ready to submit to Compliance'
+  if (status === CASE_STATUS.PENDING_REVIEW) return 'Documentation complete and waiting in Compliance queue'
+  if (status === CASE_STATUS.UNDER_REVIEW) return 'Compliance review in progress'
+  if (status === CASE_STATUS.ACTION_REQUIRED) return 'Compliance requested additional information'
+  if (status === CASE_STATUS.REJECTED) return 'Case rejected by Compliance'
+  if (status === CASE_STATUS.APPROVED) return 'Case approved and archived'
   return 'No blockers identified'
 }
 
@@ -170,7 +174,7 @@ export default function RMDashboard({ onNavigate }) {
       const mappedCases = await Promise.all(storedCases.map(async (item) => {
         const completionSummary = getDocumentCompletionSummary(item)
         const missingCategories = completionSummary.missingCategoryLabels
-        const readiness = await getReadinessScore(item.id)
+        const readiness = calculateReadinessScore(item)
 
         return {
           id: item.id,
@@ -211,18 +215,18 @@ export default function RMDashboard({ onNavigate }) {
 
   const metrics = useMemo(() => {
     const total = cases.length
-    const draft = cases.filter((c) => c.status === 'Draft').length
-    const missingDocs = cases.filter((c) => c.status === 'Missing Documents' || c.readinessScore < 50).length
-    const underReview = cases.filter((c) => c.status === 'Under Review').length
-    const pendingReview = cases.filter((c) => c.status === 'Pending Review').length
-    const escalated = cases.filter((c) => c.status === 'Escalated').length
+    const draft = cases.filter((c) => c.status === CASE_STATUS.DRAFT).length
+    const missingDocs = cases.filter((c) => c.status === CASE_STATUS.MISSING_DOCUMENTS || c.readinessScore < 50).length
+    const underReview = cases.filter((c) => c.status === CASE_STATUS.UNDER_REVIEW).length
+    const submittedReview = cases.filter((c) => c.status === CASE_STATUS.PENDING_REVIEW).length
+    const escalated = cases.filter((c) => c.status === CASE_STATUS.ESCALATED).length
 
     return [
       { label: 'Total Cases', value: total, icon: Briefcase, tone: 'text-on-surface', iconTone: 'bg-surface-container text-on-surface' },
       { label: 'Draft Cases', value: draft, icon: Clock3, tone: 'text-on-surface', iconTone: 'bg-secondary text-secondary-foreground' },
       { label: 'Cases Missing Documents', value: missingDocs, icon: FileWarning, tone: 'text-warning', iconTone: 'bg-warning/15 text-warning' },
-      { label: 'Pending Review', value: pendingReview, icon: CheckCircle2, tone: 'text-success', iconTone: 'bg-success/12 text-success' },
-      { label: 'Under Review', value: underReview, icon: FolderOpen, tone: 'text-tertiary', iconTone: 'bg-tertiary/12 text-tertiary' },
+      { label: 'Submitted for Review', value: submittedReview, icon: CheckCircle2, tone: 'text-success', iconTone: 'bg-success/12 text-success' },
+      { label: 'In Review', value: underReview, icon: FolderOpen, tone: 'text-tertiary', iconTone: 'bg-tertiary/12 text-tertiary' },
       { label: 'Escalated Cases', value: escalated, icon: ShieldAlert, tone: 'text-error', iconTone: 'bg-error/10 text-error' },
     ]
   }, [cases])

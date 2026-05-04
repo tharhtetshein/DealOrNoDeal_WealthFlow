@@ -163,7 +163,7 @@ function App() {
       case 'case-detail':
         return (
           <AppLayout activeItem="dashboard" headerProps={selectedRole === 'rm' ? { showSearch: false } : undefined}>
-            <CaseDetail onNavigate={handleNavigate} />
+            <CaseDetail onNavigate={handleNavigate} role={selectedRole} />
           </AppLayout>
         )
 

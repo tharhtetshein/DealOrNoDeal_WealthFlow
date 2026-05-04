@@ -13,6 +13,20 @@ export const CONDITION_OPS = Object.freeze({ EQ: '==', NEQ: '!=', GT: '>', LT: '
 const MAX_DEPTH = 3
 const MAX_ACTIONS = 10
 
+const NET_WORTH_USD_RATES = {
+  USD: 1,
+  SGD: 0.74,
+  CHF: 1.1,
+  GBP: 1.25,
+  EUR: 1.08,
+}
+
+function getNetWorthUsdValue(caseFile) {
+  const amount = Number(String(caseFile?.netWorth || '').replace(/,/g, ''))
+  const rate = NET_WORTH_USD_RATES[caseFile?.netWorthCurrency || 'USD'] || NET_WORTH_USD_RATES.USD
+  return amount * rate
+}
+
 export const STANDARD_CHECKLIST_ITEMS = [
   { key: 'identity_verified', label: 'Identity verified', category: 'KYC' },
   { key: 'address_proof_checked', label: 'Address proof checked', category: 'KYC' },
@@ -114,7 +128,11 @@ export function extractFacts(caseFile) {
   const docs = Array.isArray(caseFile?.documents) ? caseFile.documents : []
   const ai = caseFile?.aiAnalysis || {}
   const risks = Array.isArray(ai.risks) ? ai.risks : []
-  const mm = Array.isArray(ai.mismatches) ? ai.mismatches : []
+  const rawMismatches = Array.isArray(ai.mismatches) ? ai.mismatches : []
+  const mm = rawMismatches.filter((mismatch) => {
+    const evidenceCategory = getEvidenceCategoryForText(mismatch)
+    return !hasUploadedEvidenceForCategory(caseFile, evidenceCategory)
+  })
   const checklist = caseFile?.complianceChecklist || {}
   const docStatus = {}
   docs.forEach((d) => { const c = String(d?.category || '').trim(); if (!c) return; if (!docStatus[c]) docStatus[c] = []; let s = d.reviewStatus === 'accept' ? 'accepted' : d.reviewStatus || (d.extractedText ? 'uploaded' : 'uploaded'); docStatus[c].push(s) })
@@ -122,14 +140,17 @@ export function extractFacts(caseFile) {
   Object.entries(docStatus).forEach(([c, s]) => { if (s.includes('accepted')) catStatus[c] = 'accepted'; else if (s.includes('uploaded')) catStatus[c] = 'uploaded'; else if (s.includes('needs_clarification')) catStatus[c] = 'needs_clarification'; else if (s.includes('rejected')) catStatus[c] = 'rejected'; else catStatus[c] = 'missing' })
   const maxSev = risks.reduce((m, r) => { const v = { critical: 4, high: 3, medium: 2, low: 1 }[String(r?.severity || r?.priority || '').toLowerCase()] || 0; return Math.max(m, v) }, 0)
   const sevMap = { 0: 'None', 1: 'Low', 2: 'Medium', 3: 'High', 4: 'Critical' }
+  const netWorthUsd = getNetWorthUsdValue(caseFile)
   const facts = {
     'client.name': caseFile?.clientName || caseFile?.fullName || '',
     'client.occupation': caseFile?.occupation || '',
     'client.nationality': caseFile?.nationality || '',
     'client.residence': caseFile?.residence || '',
-    'client.netWorth': Number(caseFile?.netWorth || 0),
+    'client.netWorth': netWorthUsd,
+    'client.netWorthOriginal': Number(caseFile?.netWorth || 0),
+    'client.netWorthCurrency': caseFile?.netWorthCurrency || 'USD',
     clientProfileType: '',
-    netWorth: Number(caseFile?.netWorth || 0),
+    netWorth: netWorthUsd,
     riskAppetite: caseFile?.riskAppetite || '',
     usPerson: /united states|u\.s\./i.test(String(caseFile?.nationality || '') + ' ' + String(caseFile?.residence || '')),
     pep: Boolean(caseFile?.pep),
@@ -152,7 +173,7 @@ export function extractFacts(caseFile) {
     'derived.isInvestor': /\binvestor\b|\btrader\b|\bportfolio\b|\bfund\b/i.test(String(caseFile?.occupation || '')),
     'derived.isSalaried': /\bemployee\b|\bsalaried\b/i.test(String(caseFile?.occupation || '')),
     'derived.isUSPerson': /united states|u\.s\./i.test(String(caseFile?.nationality || '') + ' ' + String(caseFile?.residence || '')),
-    'derived.netWorthCategory': (v => { const n = Number(v || 0); if (n >= 10000000) return 'Ultra HNW'; if (n >= 5000000) return 'HNW'; if (n >= 1000000) return 'Affluent'; return 'Standard' })(caseFile?.netWorth),
+    'derived.netWorthCategory': (v => { const n = Number(v || 0); if (n >= 10000000) return 'Ultra HNW'; if (n >= 5000000) return 'HNW'; if (n >= 1000000) return 'Affluent'; return 'Standard' })(netWorthUsd),
   }
   facts.clientProfileType = facts['derived.isBusinessOwner'] ? 'Business Owner' : facts['derived.isInvestor'] ? 'Investor' : 'Salaried Employee'
   Object.entries(catStatus).forEach(([c, s]) => { facts[`documents.category.${c}.status`] = s; facts[`documents.category.${c}.exists`] = s !== 'missing' })
@@ -167,6 +188,62 @@ export function extractFacts(caseFile) {
   const chkItems = ['identity_verified', 'address_proof_checked', 'tax_residency_checked', 'sow_reviewed', 'bank_statements_reviewed', 'ai_risks_reviewed', 'mismatches_resolved']
   chkItems.forEach((k) => { facts[`checklist.${k}.checked`] = !!checklist[k]?.checked })
   return facts
+}
+
+function formatFactText(value) {
+  if (value === null || value === undefined || value === '') return ''
+  if (typeof value === 'string') return value
+  if (typeof value === 'number' || typeof value === 'boolean') return String(value)
+  if (Array.isArray(value)) return value.map(formatFactText).filter(Boolean).join(' ')
+  if (typeof value === 'object') {
+    return [
+      value.evidenceCategory,
+      value.category,
+      value.name,
+      value.suggestedActionText,
+      value.extractedText,
+      value.field,
+      value.label,
+      value.declared,
+      value.detected,
+      value.source,
+      value.description,
+      value.issue,
+      value.reason,
+      value.title,
+      value.document,
+    ].map(formatFactText).filter(Boolean).join(' ')
+  }
+  return ''
+}
+
+function getEvidenceCategoryForText(value) {
+  const text = formatFactText(value).toLowerCase()
+  if (!text) return null
+
+  if (/\b(form 1040|us individual tax return|w-?2|us tax return)\b/.test(text)) return 'us_tax_return'
+  if (/\b(w-?9|fatca|self.?certification|specified us person|us person.*tax|taxpayer identification number|tin provided)\b/.test(text)) return 'fatca_documentation'
+  if (/\b(singapore.*tax|iras|dual tax residency|tax residency certificate|tax residency documentation|tax residency letter|residency notice)\b/.test(text)) return 'singapore_tax_residency'
+  if (/\b(rsu|restricted stock|stock compensation|stock plan|vesting|vested|grant)\b/.test(text)) return 'rsu_portfolio_support'
+  if (/\b(portfolio growth|brokerage|investment portfolio|portfolio statement|listed securities)\b/.test(text)) return 'rsu_portfolio_support'
+  if (/\b(bank statement|source of funds|sof|salary transfer|bonus transfer|cash balance|liquidity|savings account)\b/.test(text)) return 'bank_statement'
+  if (/\b(source of wealth|sow|wealth verification|net worth|net-worth|asset statement|asset valuation|asset breakdown|property deed|financial statement|net-worth certification|conversion rationale|conversion methodology|currency conversion|single currency)\b/.test(text)) return 'source_of_wealth'
+  if (/\b(employment|employer|salary|payslip|bonus|income letter|employment contract)\b/.test(text)) return 'employment_income'
+  if (/\b(company ownership|shareholding|business registry|company registration|employer registration|registry extract)\b/.test(text)) return 'company_ownership'
+  if (/\b(dividend|distribution)\b/.test(text)) return 'dividend_income'
+  if (/\b(address proof|residential proof|residence proof|utility bill|lease|driver.?s licence|driver.?s license)\b/.test(text)) return 'address_proof'
+  if (/\b(passport|identity document|id document|national id)\b/.test(text)) return 'identity_document'
+  if (/\b(sanctions?|pep|adverse media|screening)\b/.test(text)) return 'screening'
+  if (/\b(enhanced due.?diligence|\bedd\b)\b/.test(text)) return 'enhanced_due_diligence'
+  return null
+}
+
+function hasUploadedEvidenceForCategory(caseFile, evidenceCategory) {
+  if (!evidenceCategory) return false
+  return (caseFile?.documents || []).some((document) => (
+    document.evidenceCategory === evidenceCategory
+    || getEvidenceCategoryForText(document) === evidenceCategory
+  ))
 }
 
 function compare(actual, op, expected) {

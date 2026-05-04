@@ -17,18 +17,34 @@ const CASE_COUNTER_STORAGE_KEY = 'wealthflow.caseCounter'
 export const CASE_STATUS = Object.freeze({
   DRAFT: 'Draft',
   MISSING_DOCUMENTS: 'Missing Documents',
-  PENDING_REVIEW: 'Pending Review',
-  UNDER_REVIEW: 'Under Review',
+  READY_FOR_REVIEW: 'Ready for Review',
+  PENDING_REVIEW: 'Submitted for Review',
+  UNDER_REVIEW: 'In Review',
   APPROVED: 'Approved',
-  ACTION_REQUIRED: 'Action Required',
+  ACTION_REQUIRED: 'Request More Information',
   REJECTED: 'Rejected',
   ESCALATED: 'Escalated',
-  READY_FOR_REVIEW: 'Pending Review',
-  IN_REVIEW: 'Under Review',
+  IN_REVIEW: 'In Review',
   COMPLIANCE_APPROVED: 'Approved',
 })
 
 const ALLOWED_CASE_STATUSES = new Set(Object.values(CASE_STATUS))
+
+export const NET_WORTH_MINIMUM_USD = 5000000
+
+export const NET_WORTH_USD_RATES = Object.freeze({
+  USD: 1,
+  SGD: 0.74,
+  CHF: 1.1,
+  GBP: 1.25,
+  EUR: 1.08,
+})
+
+export function getNetWorthUsdValue(netWorth, currency = 'USD') {
+  const amount = Number(String(netWorth || '').replace(/,/g, ''))
+  const rate = NET_WORTH_USD_RATES[currency] || NET_WORTH_USD_RATES.USD
+  return amount * rate
+}
 
 export const CLIENT_PROFILE_TYPE = Object.freeze({
   BUSINESS_OWNER: 'Business Owner',
@@ -58,7 +74,7 @@ const DOCUMENT_DEFINITIONS = [
 const SYSTEM_EDITABLE_STATUSES = new Set([
   CASE_STATUS.DRAFT,
   CASE_STATUS.MISSING_DOCUMENTS,
-  CASE_STATUS.PENDING_REVIEW,
+  CASE_STATUS.READY_FOR_REVIEW,
   CASE_STATUS.ACTION_REQUIRED,
 ])
 
@@ -130,8 +146,13 @@ function normalizeCaseFile(caseFile) {
   if (!caseFile) return null
 
   const statusAliases = {
-    'Ready for Review': CASE_STATUS.PENDING_REVIEW,
+    'Pending Review': CASE_STATUS.PENDING_REVIEW,
+    'Ready for Review': CASE_STATUS.READY_FOR_REVIEW,
+    'Submitted for Review': CASE_STATUS.PENDING_REVIEW,
     'In Review': CASE_STATUS.UNDER_REVIEW,
+    'Under Review': CASE_STATUS.UNDER_REVIEW,
+    'Action Required': CASE_STATUS.ACTION_REQUIRED,
+    'Request More Information': CASE_STATUS.ACTION_REQUIRED,
     'Compliance Approved': CASE_STATUS.APPROVED,
   }
   const statusValue = statusAliases[caseFile.status] || caseFile.status
@@ -142,6 +163,7 @@ function normalizeCaseFile(caseFile) {
 
   return {
     ...caseFile,
+    netWorthCurrency: caseFile.netWorthCurrency || 'USD',
     status: normalizedStatus,
     createdAt: normalizeDateValue(caseFile.createdAt),
     updatedAt: normalizeDateValue(caseFile.updatedAt),
@@ -234,25 +256,52 @@ export function getClientProfileType(caseFile) {
 }
 
 function getRequiredDocumentDefinitions(caseFile) {
+  const profileType = getClientProfileType(caseFile)
+  const baseDefinitions = DOCUMENT_DEFINITIONS.filter((definition) => {
+    if (definition.alwaysRequired) return true
+    return (definition.profileTypes || []).includes(profileType)
+  })
   const snapshot = getRuleDecisionSnapshot(caseFile)
-  const ruleRequired = snapshot?.aggregatedActions?.requiredDocuments || caseFile?._ruleEvaluation?.aggregatedActions?.requiredDocuments || []
-  if (ruleRequired.length > 0) {
-    return ruleRequired.map((item) => ({
+  const ruleRequiredByLabel = new Map()
+  const addRuleRequired = (items = []) => {
+    items.forEach((item) => {
+      const label = normalizeCategory(item.target || item.label)
+      if (!label || ruleRequiredByLabel.has(label)) return
+      ruleRequiredByLabel.set(label, item)
+    })
+  }
+
+  addRuleRequired(snapshot?.aggregatedActions?.requiredDocuments || [])
+  addRuleRequired(caseFile?._ruleEvaluation?.aggregatedActions?.requiredDocuments || [])
+  ;(Array.isArray(caseFile?.ruleSnapshots) ? caseFile.ruleSnapshots : []).forEach((entry) => {
+    addRuleRequired(entry?.aggregatedActions?.requiredDocuments || [])
+  })
+
+  const ruleDefinitions = Array.from(ruleRequiredByLabel.values()).map((item) => {
+    const firstSource = item.sources?.[0] || {}
+    return {
       key: String(item.target || item.label || '').toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/^_|_$/g, ''),
       label: item.target || item.label,
       category: item.category || 'Rule Required Documents',
       alwaysRequired: true,
-      reason: item.reason || item.sources?.[0]?.ruleName || 'Required by active compliance rule.',
+      reason: firstSource.ruleName || item.reason || 'Required by active compliance rule.',
+      ruleReason: item.reason || firstSource.ruleName || 'Required by active compliance rule.',
+      sourceLabel: 'Rule-Based Compliance Engine',
+      policyReference: firstSource.policyReference || item.policyReference || '',
       ruleDriven: true,
       sources: item.sources || [],
-    }))
-  }
-
-  const profileType = getClientProfileType(caseFile)
-  return DOCUMENT_DEFINITIONS.filter((definition) => {
-    if (definition.alwaysRequired) return true
-    return (definition.profileTypes || []).includes(profileType)
+    }
   })
+
+  const definitionsByLabel = new Map()
+  ;[...baseDefinitions, ...ruleDefinitions].forEach((definition) => {
+    const label = normalizeCategory(definition.label)
+    if (!label) return
+    if (definitionsByLabel.has(label) && definition.ruleDriven) return
+    definitionsByLabel.set(label, definition)
+  })
+
+  return Array.from(definitionsByLabel.values())
 }
 
 function isFatcaApplicable(caseFile) {
@@ -317,6 +366,9 @@ export function getDocumentCompletionSummary(caseFile) {
       missingReason: definition.reason,
       ruleDriven: Boolean(definition.ruleDriven),
       sources: definition.sources || [],
+      sourceLabel: definition.sourceLabel || '',
+      ruleReason: definition.ruleReason || '',
+      policyReference: definition.policyReference || '',
     }
   })
 
@@ -380,6 +432,8 @@ export function getDocumentCompletionSummary(caseFile) {
     missingCategoryLabels: missingEntries.map((entry) => entry.label),
     allRequiredComplete: missingRequiredDocuments.length === 0 && needsReviewDocuments.length === 0,
     hasCriticalMissing: missingRequiredDocuments.length > 0,
+    ruleRequiredDocuments: requiredDocuments.filter((item) => item.ruleDriven),
+    missingRuleRequiredDocuments: missingRequiredDocuments.filter((item) => item.ruleDriven),
   }
 }
 
@@ -406,6 +460,8 @@ function formatAnalysisText(value) {
     return [
       value.priority,
       value.severity,
+      value.field,
+      value.label,
       value.action,
       value.recommendation,
       value.nextAction,
@@ -414,6 +470,9 @@ function formatAnalysisText(value) {
       value.reason,
       value.title,
       value.document,
+      value.declared,
+      value.detected,
+      value.source,
       value.rationale,
     ].map(formatAnalysisText).filter(Boolean).join(' ')
   }
@@ -438,6 +497,49 @@ function getAiActionPriority(value) {
   return 'Low'
 }
 
+function getEvidenceCategoryForText(value) {
+  const text = formatAnalysisText(value).toLowerCase()
+  if (!text) return null
+
+  if (/\b(form 1040|us individual tax return|w-?2|us tax return)\b/.test(text)) return 'us_tax_return'
+  if (/\b(w-?9|fatca|self.?certification|specified us person|us person.*tax|taxpayer identification number|tin provided)\b/.test(text)) return 'fatca_documentation'
+  if (/\b(singapore.*tax|iras|dual tax residency|tax residency certificate|tax residency documentation|tax residency letter|residency notice)\b/.test(text)) return 'singapore_tax_residency'
+  if (/\b(rsu|restricted stock|stock compensation|stock plan|vesting|vested|grant)\b/.test(text)) return 'rsu_portfolio_support'
+  if (/\b(portfolio growth|brokerage|investment portfolio|portfolio statement|listed securities)\b/.test(text)) return 'rsu_portfolio_support'
+  if (/\b(bank statement|source of funds|sof|salary transfer|bonus transfer|cash balance|liquidity|savings account)\b/.test(text)) return 'bank_statement'
+  if (/\b(source of wealth|sow|wealth verification|net worth|net-worth|asset statement|asset valuation|asset breakdown|property deed|financial statement|net-worth certification|conversion rationale|conversion methodology|currency conversion|single currency)\b/.test(text)) return 'source_of_wealth'
+  if (/\b(employment|employer|salary|payslip|bonus|income letter|employment contract)\b/.test(text)) return 'employment_income'
+  if (/\b(company ownership|shareholding|business registry|company registration|employer registration|registry extract)\b/.test(text)) return 'company_ownership'
+  if (/\b(dividend|distribution)\b/.test(text)) return 'dividend_income'
+  if (/\b(address proof|residential proof|residence proof|utility bill|lease|driver.?s licence|driver.?s license)\b/.test(text)) return 'address_proof'
+  if (/\b(passport|identity document|id document|national id)\b/.test(text)) return 'identity_document'
+  if (/\b(sanctions?|pep|adverse media|screening)\b/.test(text)) return 'screening'
+  if (/\b(enhanced due.?diligence|\bedd\b)\b/.test(text)) return 'enhanced_due_diligence'
+  return null
+}
+
+function hasUploadedEvidenceForCategory(caseFile, evidenceCategory) {
+  if (!evidenceCategory) return false
+  return (caseFile?.documents || []).some((document) => {
+    const haystack = [
+      document.evidenceCategory,
+      document.category,
+      document.name,
+      document.suggestedActionText,
+      document.extractedText,
+    ].map(formatAnalysisText).join(' ')
+    return document.evidenceCategory === evidenceCategory || getEvidenceCategoryForText(haystack) === evidenceCategory
+  })
+}
+
+function getOpenAiMismatches(caseFile) {
+  const mismatches = Array.isArray(caseFile?.aiAnalysis?.mismatches) ? caseFile.aiAnalysis.mismatches : []
+  return mismatches.filter((mismatch) => {
+    const evidenceCategory = getEvidenceCategoryForText(mismatch)
+    return !hasUploadedEvidenceForCategory(caseFile, evidenceCategory)
+  })
+}
+
 function getHighPriorityAiFollowUps(caseFile) {
   const analysis = caseFile?.aiAnalysis || {}
   const suggestedActions = Array.isArray(analysis.suggestedActions)
@@ -449,7 +551,11 @@ function getHighPriorityAiFollowUps(caseFile) {
     ? analysis.missingOrInsufficientDocuments
     : []
 
-  return [...suggestedActions, ...missingEvidence].filter((item) => getAiActionPriority(item) === 'High')
+  return [...suggestedActions, ...missingEvidence].filter((item) => {
+    if (getAiActionPriority(item) !== 'High') return false
+    const evidenceCategory = getEvidenceCategoryForText(item)
+    return !hasUploadedEvidenceForCategory(caseFile, evidenceCategory)
+  })
 }
 
 export function hasCompletedAiAnalysis(caseFile) {
@@ -485,17 +591,32 @@ export function calculateReadinessScore(caseFile) {
   const completionSummary = getDocumentCompletionSummary(normalized)
   const profileComplete = hasRequiredFields(normalized)
   const highPriorityFollowUps = getHighPriorityAiFollowUps(normalized)
+  const openAiMismatches = getOpenAiMismatches(normalized)
+  const snapshot = getRuleDecisionSnapshot(normalized)
+  const ruleBlockers = snapshot?.aggregatedActions?.blockers || []
   const riskCleared = hasFreshAiAnalysis(normalized)
     && !hasCriticalIssues(normalized)
     && highPriorityFollowUps.length === 0
+    && openAiMismatches.length === 0
+    && ruleBlockers.length === 0
 
   const totalItems = 1 + completionSummary.requiredTotal + 1
   const completedItems = (profileComplete ? 1 : 0)
     + completionSummary.requiredCompletedCount
     + (riskCleared ? 1 : 0)
   const baselinePercentage = totalItems === 0 ? 0 : Math.round((completedItems / totalItems) * 100)
-  const snapshot = getRuleDecisionSnapshot(normalized)
-  const percentage = snapshot?.computedMetrics?.finalReadiness ?? baselinePercentage
+  const rawReadinessPenalty = snapshot?.computedMetrics?.readinessPenalty || 0
+  const resolvedMismatchPenalty = openAiMismatches.length === 0
+    ? (snapshot?.aggregatedActions?.readinessPenalties || [])
+      .filter((penalty) => /mismatch/i.test(formatAnalysisText(penalty)))
+      .reduce((total, penalty) => total + Number(penalty.value || penalty.params?.value || 0), 0)
+    : 0
+  const readinessPenalty = profileComplete && completionSummary.allRequiredComplete && riskCleared
+    ? 0
+    : Math.max(0, rawReadinessPenalty - resolvedMismatchPenalty)
+  const percentage = snapshot
+    ? Math.max(0, Math.min(100, baselinePercentage - readinessPenalty))
+    : baselinePercentage
   const ruleRisk = snapshot?.computedMetrics?.finalRiskLevel || null
 
   return {
@@ -519,13 +640,15 @@ export function calculateReadinessScore(caseFile) {
       aiAnalysisCompleted: hasFreshAiAnalysis(normalized),
       hasHighOrCriticalRisk: hasCriticalIssues(normalized),
       highPriorityFollowUps: highPriorityFollowUps.length,
+      openAiMismatches: openAiMismatches.length,
+      ruleBlockers: ruleBlockers.length,
       ruleAdjustedRisk: ruleRisk,
     },
     rules: snapshot ? {
       ruleSetVersion: snapshot.ruleSetVersion,
       evaluatedAt: snapshot.evaluatedAt,
       triggeredRuleCount: snapshot.triggeredRules?.length || 0,
-      readinessPenalty: snapshot.computedMetrics?.readinessPenalty || 0,
+      readinessPenalty,
       riskLevel: ruleRisk,
       blockers: snapshot.aggregatedActions?.blockers || [],
     } : null,
@@ -542,6 +665,14 @@ export async function getReadinessScore(caseId) {
 }
 
 function derivePreReviewStatus(caseFile) {
+  if (caseFile?.submittedAt) {
+    return CASE_STATUS.PENDING_REVIEW
+  }
+
+  if (!hasRequiredFields(caseFile)) {
+    return CASE_STATUS.MISSING_DOCUMENTS
+  }
+
   if (hasNoDocuments(caseFile)) {
     return CASE_STATUS.DRAFT
   }
@@ -550,15 +681,20 @@ function derivePreReviewStatus(caseFile) {
     return CASE_STATUS.MISSING_DOCUMENTS
   }
 
-  if (!hasRequiredFields(caseFile)) {
-    return CASE_STATUS.DRAFT
-  }
-
   if (hasCriticalIssues(caseFile)) {
-    return CASE_STATUS.DRAFT
+    return CASE_STATUS.MISSING_DOCUMENTS
   }
 
-  return CASE_STATUS.PENDING_REVIEW
+  if (!hasFreshAiAnalysis(caseFile)) {
+    return CASE_STATUS.MISSING_DOCUMENTS
+  }
+
+  const snapshot = getRuleDecisionSnapshot(caseFile)
+  if ((snapshot?.aggregatedActions?.blockers || []).length > 0) {
+    return CASE_STATUS.MISSING_DOCUMENTS
+  }
+
+  return CASE_STATUS.READY_FOR_REVIEW
 }
 
 function canTransitionStatus(previousStatus, nextStatus) {
@@ -566,14 +702,15 @@ function canTransitionStatus(previousStatus, nextStatus) {
   if (!ALLOWED_CASE_STATUSES.has(previousStatus) || !ALLOWED_CASE_STATUSES.has(nextStatus)) return false
 
   const allowed = {
-    [CASE_STATUS.DRAFT]: new Set([CASE_STATUS.MISSING_DOCUMENTS, CASE_STATUS.PENDING_REVIEW]),
-    [CASE_STATUS.MISSING_DOCUMENTS]: new Set([CASE_STATUS.DRAFT, CASE_STATUS.PENDING_REVIEW]),
-    [CASE_STATUS.PENDING_REVIEW]: new Set([CASE_STATUS.DRAFT, CASE_STATUS.MISSING_DOCUMENTS, CASE_STATUS.UNDER_REVIEW, CASE_STATUS.ACTION_REQUIRED]),
-    [CASE_STATUS.UNDER_REVIEW]: new Set([CASE_STATUS.APPROVED, CASE_STATUS.ACTION_REQUIRED, CASE_STATUS.REJECTED, CASE_STATUS.ESCALATED, CASE_STATUS.DRAFT, CASE_STATUS.MISSING_DOCUMENTS]),
+    [CASE_STATUS.DRAFT]: new Set([CASE_STATUS.MISSING_DOCUMENTS, CASE_STATUS.READY_FOR_REVIEW, CASE_STATUS.PENDING_REVIEW]),
+    [CASE_STATUS.MISSING_DOCUMENTS]: new Set([CASE_STATUS.DRAFT, CASE_STATUS.READY_FOR_REVIEW, CASE_STATUS.PENDING_REVIEW]),
+    [CASE_STATUS.READY_FOR_REVIEW]: new Set([CASE_STATUS.MISSING_DOCUMENTS, CASE_STATUS.PENDING_REVIEW]),
+    [CASE_STATUS.PENDING_REVIEW]: new Set([CASE_STATUS.UNDER_REVIEW, CASE_STATUS.ACTION_REQUIRED, CASE_STATUS.MISSING_DOCUMENTS]),
+    [CASE_STATUS.UNDER_REVIEW]: new Set([CASE_STATUS.APPROVED, CASE_STATUS.ACTION_REQUIRED, CASE_STATUS.REJECTED, CASE_STATUS.ESCALATED]),
     [CASE_STATUS.APPROVED]: new Set([]),
-    [CASE_STATUS.ACTION_REQUIRED]: new Set([CASE_STATUS.DRAFT, CASE_STATUS.MISSING_DOCUMENTS, CASE_STATUS.PENDING_REVIEW]),
+    [CASE_STATUS.ACTION_REQUIRED]: new Set([CASE_STATUS.MISSING_DOCUMENTS, CASE_STATUS.READY_FOR_REVIEW, CASE_STATUS.PENDING_REVIEW]),
     [CASE_STATUS.REJECTED]: new Set([]),
-    [CASE_STATUS.ESCALATED]: new Set([CASE_STATUS.UNDER_REVIEW, CASE_STATUS.ACTION_REQUIRED, CASE_STATUS.REJECTED]),
+    [CASE_STATUS.ESCALATED]: new Set([CASE_STATUS.UNDER_REVIEW, CASE_STATUS.APPROVED, CASE_STATUS.REJECTED]),
   }
 
   return allowed[previousStatus]?.has(nextStatus) || false
@@ -653,6 +790,32 @@ function getLocalCaseFileById(caseId) {
   return cases.find((item) => item.id === caseId) || null
 }
 
+function mergeLocalRuleState(caseFile) {
+  const normalized = normalizeCaseFile(caseFile)
+  if (!normalized?.id) return normalized
+  const local = getLocalCaseFileById(normalized.id)
+  if (!local) return normalized
+
+  const snapshotsById = new Map()
+  ;[...(local.ruleSnapshots || []), ...(normalized.ruleSnapshots || [])].forEach((snapshot) => {
+    if (!snapshot?.snapshotId) return
+    snapshotsById.set(snapshot.snapshotId, snapshot)
+  })
+  const ruleSnapshots = Array.from(snapshotsById.values())
+    .sort((a, b) => Date.parse(a.evaluatedAt || '') - Date.parse(b.evaluatedAt || ''))
+  const latestSnapshot = ruleSnapshots[ruleSnapshots.length - 1]
+    || normalized._lastRuleSnapshot
+    || local._lastRuleSnapshot
+    || null
+
+  return {
+    ...normalized,
+    ruleSnapshots,
+    _lastRuleSnapshot: latestSnapshot,
+    _ruleEvaluation: normalized._ruleEvaluation || local._ruleEvaluation || null,
+  }
+}
+
 function upsertLocalCaseFile(caseFile) {
   const normalizedCaseFile = normalizeCaseFile(caseFile)
   const cases = getLocalCaseFiles()
@@ -687,6 +850,7 @@ function createLocalDraftCase(formData) {
     residence: formData.residence || '',
     occupation: formData.occupation || '',
     netWorth: formData.netWorth || '',
+    netWorthCurrency: formData.netWorthCurrency || 'USD',
     purpose: formData.purpose || '',
     status: CASE_STATUS.DRAFT,
     createdAt: now,
@@ -737,7 +901,7 @@ async function withStorageFallback(operation, fallback) {
 export async function getAllCaseFiles() {
   return withStorageFallback(
     async () => {
-      const cases = (await listFirebaseCaseFiles()).map(normalizeCaseFile)
+      const cases = (await listFirebaseCaseFiles()).map(mergeLocalRuleState)
       saveLocalCaseFiles(cases)
       return cases
     },
@@ -748,7 +912,7 @@ export async function getAllCaseFiles() {
 export async function getCaseFileById(caseId) {
   return withStorageFallback(
     async () => {
-      const caseFile = normalizeCaseFile(await getFirebaseCaseFile(caseId))
+      const caseFile = mergeLocalRuleState(await getFirebaseCaseFile(caseId))
       if (caseFile) upsertLocalCaseFile(caseFile)
       return caseFile
     },
@@ -791,6 +955,7 @@ export async function createDraftCase(formData) {
         residence: formData.residence || '',
         occupation: formData.occupation || '',
         netWorth: formData.netWorth || '',
+        netWorthCurrency: formData.netWorthCurrency || 'USD',
         purpose: formData.purpose || '',
         status: CASE_STATUS.DRAFT,
         statusHistory: [{
@@ -815,7 +980,7 @@ export async function createDraftCase(formData) {
 export async function updateCaseCore(caseId, formData) {
   return withStorageFallback(
     async () => {
-      const existing = await getFirebaseCaseFile(caseId)
+      const existing = mergeLocalRuleState(await getFirebaseCaseFile(caseId))
       if (!existing) return null
 
       const merged = normalizeCaseFile({
@@ -825,6 +990,7 @@ export async function updateCaseCore(caseId, formData) {
         residence: formData.residence || existing.residence,
         occupation: formData.occupation || existing.occupation,
         netWorth: formData.netWorth || existing.netWorth,
+        netWorthCurrency: formData.netWorthCurrency || existing.netWorthCurrency || 'USD',
         purpose: formData.purpose || existing.purpose,
       })
 
@@ -836,6 +1002,7 @@ export async function updateCaseCore(caseId, formData) {
         residence: withDerivedStatus.residence,
         occupation: withDerivedStatus.occupation,
         netWorth: withDerivedStatus.netWorth,
+        netWorthCurrency: withDerivedStatus.netWorthCurrency,
         purpose: withDerivedStatus.purpose,
         status: withDerivedStatus.status,
         statusHistory: withDerivedStatus.statusHistory,
@@ -855,6 +1022,7 @@ export async function updateCaseCore(caseId, formData) {
         residence: formData.residence || existing.residence,
         occupation: formData.occupation || existing.occupation,
         netWorth: formData.netWorth || existing.netWorth,
+        netWorthCurrency: formData.netWorthCurrency || existing.netWorthCurrency || 'USD',
         purpose: formData.purpose || existing.purpose,
         updatedAt: new Date().toISOString(),
       }
@@ -977,8 +1145,19 @@ export async function addDocumentToCase(caseId, documentMeta) {
         submittedAt: null,
       })
 
-      const updated = normalizeCaseFile(await getFirebaseCaseFile(caseId))
-      return updated ? persistRuleSnapshot(updated, { triggeredBy: 'addDocument' }) : null
+      const updated = mergeLocalRuleState(await getFirebaseCaseFile(caseId))
+      const enriched = updated ? persistRuleSnapshot(updated, { triggeredBy: 'addDocument' }) : null
+      if (enriched) {
+        try {
+          await updateFirebaseCaseFile(caseId, {
+            ruleSnapshots: enriched.ruleSnapshots,
+            _lastRuleSnapshot: enriched._lastRuleSnapshot,
+          })
+        } catch (error) {
+          console.warn('Unable to persist rule snapshot after document upload:', error)
+        }
+      }
+      return enriched
     },
     async () => {
       const existing = getLocalCaseFileById(caseId)
@@ -1001,7 +1180,7 @@ export async function addDocumentToCase(caseId, documentMeta) {
 export async function removeDocumentFromCase(caseId, documentId) {
   return withStorageFallback(
     async () => {
-      const existing = await getFirebaseCaseFile(caseId)
+      const existing = mergeLocalRuleState(await getFirebaseCaseFile(caseId))
       if (!existing) return null
 
       const removedDocument = (existing.documents || []).find((doc) => doc.id === documentId) || null
@@ -1029,8 +1208,19 @@ export async function removeDocumentFromCase(caseId, documentId) {
         }
       }
 
-      const updated = normalizeCaseFile(await getFirebaseCaseFile(caseId))
-      return updated ? persistRuleSnapshot(updated, { triggeredBy: 'removeDocument' }) : null
+      const updated = mergeLocalRuleState(await getFirebaseCaseFile(caseId))
+      const enriched = updated ? persistRuleSnapshot(updated, { triggeredBy: 'removeDocument' }) : null
+      if (enriched) {
+        try {
+          await updateFirebaseCaseFile(caseId, {
+            ruleSnapshots: enriched.ruleSnapshots,
+            _lastRuleSnapshot: enriched._lastRuleSnapshot,
+          })
+        } catch (error) {
+          console.warn('Unable to persist rule snapshot after document removal:', error)
+        }
+      }
+      return enriched
     },
     async () => {
       const existing = getLocalCaseFileById(caseId)
@@ -1050,8 +1240,8 @@ export async function removeDocumentFromCase(caseId, documentId) {
 
 export function hasRequiredFields(caseFile) {
   if (!caseFile) return false
-  const netWorthValue = Number(String(caseFile.netWorth || '').replace(/,/g, ''))
-  return Boolean(caseFile.clientName) && netWorthValue >= 3000000
+  const netWorthUsdValue = getNetWorthUsdValue(caseFile.netWorth, caseFile.netWorthCurrency || 'USD')
+  return Boolean(caseFile.clientName) && netWorthUsdValue >= NET_WORTH_MINIMUM_USD
 }
 
 export function hasRequiredDocuments(caseFile) {
@@ -1080,19 +1270,18 @@ export async function markReadyForReview(caseId) {
 
       const nextCase = withStatusTransition(
         existing,
-        CASE_STATUS.PENDING_REVIEW,
+        CASE_STATUS.READY_FOR_REVIEW,
         'RM',
-        'Submitted to Compliance queue',
+        'Case marked ready for review',
       )
 
-      if (nextCase.status !== CASE_STATUS.PENDING_REVIEW) {
-        return { ok: false, reason: `Invalid status transition from ${existing.status} to Pending Review` }
+      if (nextCase.status !== CASE_STATUS.READY_FOR_REVIEW) {
+        return { ok: false, reason: `Invalid status transition from ${existing.status} to Ready for Review` }
       }
 
       await updateFirebaseCaseFile(caseId, {
-        status: CASE_STATUS.PENDING_REVIEW,
+        status: CASE_STATUS.READY_FOR_REVIEW,
         statusHistory: nextCase.statusHistory,
-        submittedAt: new Date().toISOString(),
       })
 
       const updated = normalizeCaseFile(await getFirebaseCaseFile(caseId))
@@ -1122,20 +1311,19 @@ export async function markReadyForReview(caseId) {
 
       const nextCase = withStatusTransition(
         existing,
-        CASE_STATUS.PENDING_REVIEW,
+        CASE_STATUS.READY_FOR_REVIEW,
         'RM',
-        'Submitted to Compliance queue',
+        'Case marked ready for review',
       )
 
-      if (nextCase.status !== CASE_STATUS.PENDING_REVIEW) {
-        return { ok: false, reason: `Invalid status transition from ${existing.status} to Pending Review` }
+      if (nextCase.status !== CASE_STATUS.READY_FOR_REVIEW) {
+        return { ok: false, reason: `Invalid status transition from ${existing.status} to Ready for Review` }
       }
 
       const updated = upsertLocalCaseFile({
         ...existing,
-        status: CASE_STATUS.PENDING_REVIEW,
+        status: CASE_STATUS.READY_FOR_REVIEW,
         statusHistory: nextCase.statusHistory,
-        submittedAt: new Date().toISOString(),
         updatedAt: new Date().toISOString(),
       })
 
@@ -1185,7 +1373,7 @@ export async function submitCaseForCompliance(caseId, payload = {}) {
       )
 
       if (nextCase.status !== CASE_STATUS.PENDING_REVIEW) {
-        return { ok: false, reason: `Invalid status transition from ${existing.status} to Pending Review` }
+        return { ok: false, reason: `Invalid status transition from ${existing.status} to Submitted for Review` }
       }
 
       await updateFirebaseCaseFile(caseId, {
@@ -1241,7 +1429,7 @@ export async function submitCaseForCompliance(caseId, payload = {}) {
       )
 
       if (nextCase.status !== CASE_STATUS.PENDING_REVIEW) {
-        return { ok: false, reason: `Invalid status transition from ${existing.status} to Pending Review` }
+        return { ok: false, reason: `Invalid status transition from ${existing.status} to Submitted for Review` }
       }
 
       const updated = upsertLocalCaseFile({
@@ -1563,10 +1751,15 @@ export async function reviewDocument(caseId, documentId, reviewAction, comment =
         }
         return { ...doc, reviewStatus: reviewAction, reviewComment: comment }
       })
+      const nextCase = ['needs_clarification', 'reject'].includes(reviewAction)
+        ? withStatusTransition(existing, CASE_STATUS.ACTION_REQUIRED, 'Compliance', 'Compliance requested document follow-up')
+        : existing
 
       await updateFirebaseCaseFile(caseId, {
         documentReviews,
         documents,
+        status: nextCase.status,
+        statusHistory: nextCase.statusHistory || existing.statusHistory || [],
         updatedAt: new Date().toISOString(),
       })
 
@@ -1585,9 +1778,12 @@ export async function reviewDocument(caseId, documentId, reviewAction, comment =
         }
         return { ...doc, reviewStatus: reviewAction, reviewComment: comment }
       })
+      const nextCase = ['needs_clarification', 'reject'].includes(reviewAction)
+        ? withStatusTransition(existing, CASE_STATUS.ACTION_REQUIRED, 'Compliance', 'Compliance requested document follow-up')
+        : existing
 
       const updated = upsertLocalCaseFile({
-        ...existing,
+        ...nextCase,
         documentReviews: [...(existing.documentReviews || []), reviewEntry],
         documents,
         updatedAt: new Date().toISOString(),

@@ -1,5 +1,24 @@
 const API_BASE_URL = 'http://localhost:3001/api'
 
+async function getErrorMessage(response, fallback) {
+  try {
+    const payload = await response.json()
+    if (payload?.code === 'groq_rate_limited') {
+      return `AI analysis is temporarily unavailable. Try again in about ${payload.retryAfterMinutes || 1} minute(s).`
+    }
+    const rawMessage = payload?.details || payload?.error || fallback
+    if (/rate limit|tokens per day|tokens per minute|retry-after|try again in/i.test(rawMessage)) {
+      return 'AI analysis is temporarily unavailable because the daily AI token limit was reached. Please try again later.'
+    }
+    if (/groq|organization|service tier|billing|api key/i.test(rawMessage)) {
+      return fallback
+    }
+    return rawMessage
+  } catch {
+    return fallback
+  }
+}
+
 export async function extractDocumentText(files) {
   const formData = new FormData()
 
@@ -15,7 +34,7 @@ export async function extractDocumentText(files) {
   })
 
   if (!response.ok) {
-    throw new Error('Failed to extract document text')
+    throw new Error(await getErrorMessage(response, 'Failed to extract document text'))
   }
 
   return response.json()
@@ -31,7 +50,7 @@ export async function analyzeCaseDocuments(clientData, documents) {
   })
 
   if (!response.ok) {
-    throw new Error('Failed to analyze case documents')
+    throw new Error(await getErrorMessage(response, 'Failed to analyze case documents'))
   }
 
   return response.json()
@@ -54,7 +73,7 @@ export async function analyzeDocuments(clientData, documents) {
   })
 
   if (!response.ok) {
-    throw new Error('Failed to analyze documents')
+    throw new Error(await getErrorMessage(response, 'Failed to analyze documents'))
   }
 
   return response.json()
@@ -76,7 +95,7 @@ export async function detectRisks(clientData, documents) {
   })
 
   if (!response.ok) {
-    throw new Error('Failed to detect risks')
+    throw new Error(await getErrorMessage(response, 'Failed to detect risks'))
   }
 
   return response.json()
