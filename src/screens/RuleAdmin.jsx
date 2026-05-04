@@ -5,14 +5,12 @@ import { Input } from '../components/ui/input'
 import { Label } from '../components/ui/label'
 import {
   listRules,
-  createRuleDraft,
-  publishRule,
-  archiveRule,
-  deleteRule,
-  upsertRule,
-  resetToDefaultRules,
-  loadRules,
-  detectRuleConflicts,
+  publishRuleAsync,
+  archiveRuleAsync,
+  deleteRuleAsync,
+  upsertRuleAsync,
+  resetToDefaultRulesAsync,
+  loadRulesAsync,
 } from '../lib/ruleStorage'
 import { evaluateRule, extractFacts, validateRule } from '../lib/ruleEngine'
 import { evaluateCaseRules } from '../lib/ruleEvaluation'
@@ -140,6 +138,7 @@ export default function RuleAdmin({ onBack }) {
   const [sandboxResult, setSandboxResult] = useState(null)
   const [cases, setCases] = useState([])
   const [notification, setNotification] = useState(null)
+  const [rulesLoading, setRulesLoading] = useState(true)
 
   useEffect(() => {
     refreshRules()
@@ -153,9 +152,11 @@ export default function RuleAdmin({ onBack }) {
     }
   }, [notification])
 
-  function refreshRules() {
-    loadRules()
+  async function refreshRules() {
+    setRulesLoading(true)
+    await loadRulesAsync()
     setRules(listRules())
+    setRulesLoading(false)
   }
 
   function showNotification(message, type = 'success') {
@@ -224,7 +225,7 @@ export default function RuleAdmin({ onBack }) {
     setActiveTab('editor')
   }
 
-  function handleSaveDraft() {
+  async function handleSaveDraft() {
     const ruleToSave = { ...draftRule }
     if (!ruleToSave.id) ruleToSave.id = generateRuleId()
     const validation = validateRule(ruleToSave)
@@ -232,43 +233,43 @@ export default function RuleAdmin({ onBack }) {
       showNotification(`Validation failed: ${validation.errors.join(', ')}`, 'error')
       return
     }
-    upsertRule(ruleToSave)
-    refreshRules()
+    await upsertRuleAsync(ruleToSave)
+    await refreshRules()
     showNotification(isEditing ? 'Rule updated' : 'Rule draft saved')
     setActiveTab('list')
   }
 
-  function handlePublishRule(id) {
-    const result = publishRule(id, 'admin')
+  async function handlePublishRule(id) {
+    const result = await publishRuleAsync(id, 'admin')
     if (!result?.ok) {
       showNotification(`Publish blocked: ${(result?.errors || [result?.reason || 'rule is not publishable']).join(', ')}`, 'error')
       return
     }
-    refreshRules()
+    await refreshRules()
     showNotification('Rule published')
   }
 
-  function handleArchiveRule(id, version) {
-    archiveRule(id, version)
-    refreshRules()
+  async function handleArchiveRule(id, version) {
+    await archiveRuleAsync(id, version)
+    await refreshRules()
     showNotification('Rule archived')
   }
 
-  function handleDeleteRule(id, version) {
+  async function handleDeleteRule(id, version) {
     if (!window.confirm('Are you sure you want to delete this rule?')) return
-    const result = deleteRule(id, version)
+    const result = await deleteRuleAsync(id, version)
     if (result && !result.ok) {
       showNotification(result.reason, 'error')
       return
     }
-    refreshRules()
+    await refreshRules()
     showNotification('Rule deleted')
   }
 
-  function handleResetDefaults() {
+  async function handleResetDefaults() {
     if (!window.confirm('Reset all rules to system defaults? This will replace current rules.')) return
-    resetToDefaultRules()
-    refreshRules()
+    await resetToDefaultRulesAsync()
+    await refreshRules()
     showNotification('Rules reset to defaults')
   }
 
@@ -433,14 +434,14 @@ export default function RuleAdmin({ onBack }) {
                     <option value="Draft">Draft</option>
                     <option value="Archived">Archived</option>
                   </select>
-                  <span className="text-sm text-gray-500">{filteredRules.length} rules</span>
+                  <span className="text-sm text-gray-500">{rulesLoading ? 'Loading rules...' : `${filteredRules.length} rules`}</span>
                 </div>
               </CardContent>
             </Card>
 
             <div className="grid gap-4">
               {filteredRules.map((rule) => (
-                <Card key={rule.id}>
+                <Card key={`${rule.id}-${rule.version}`}>
                   <CardContent className="p-5">
                     <div className="flex items-start justify-between">
                       <div className="flex-1 min-w-0">

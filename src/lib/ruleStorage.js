@@ -1,8 +1,14 @@
-// Rule Storage - Phase 1
-// Handles CRUD for compliance rules. Uses localStorage for Phase 1.
-// Future: upgrade to Firestore backend.
+// Rule Storage
+// Uses Firestore when configured, with localStorage as the fast/offline cache.
 
 import { RULE_STATUS, getDefaultRules, normalizeRule, validateRule, evaluateCondition } from './ruleEngine'
+import {
+  deleteFirebaseRule,
+  hasFirebaseConfig,
+  listFirebaseRules,
+  replaceFirebaseRules,
+  saveFirebaseRule,
+} from './firebaseRules'
 
 const RULES_STORAGE_KEY = 'wealthflow.complianceRules'
 
@@ -24,8 +30,8 @@ function saveLocalRules(rules) {
   window.localStorage.setItem(RULES_STORAGE_KEY, JSON.stringify(rules.map(normalizeRule)))
 }
 
-export function loadRules() {
-  let rules = getLocalRules().map(normalizeRule)
+function hydrateSystemRules(sourceRules) {
+  let rules = (sourceRules || []).map(normalizeRule)
   const defaultsById = new Map(getDefaultRules().map((rule) => [rule.id, normalizeRule(rule)]))
   rules = rules.map((rule) => {
     const defaultRule = defaultsById.get(rule.id)
@@ -38,16 +44,49 @@ export function loadRules() {
       regulatoryFramework: defaultRule.regulatoryFramework,
     }
   })
-  if (typeof window !== 'undefined' && !window.localStorage.getItem(RULES_STORAGE_KEY)) {
-    saveLocalRules(rules)
-  } else {
-    saveLocalRules(rules)
-  }
+  defaultsById.forEach((defaultRule, id) => {
+    if (!rules.some((rule) => rule.id === id)) {
+      rules.push(defaultRule)
+    }
+  })
   return rules
 }
 
+export function loadRules() {
+  const rules = hydrateSystemRules(getLocalRules())
+  saveLocalRules(rules)
+  return rules
+}
+
+export async function loadRulesAsync() {
+  const localRules = loadRules()
+  if (!hasFirebaseConfig) return localRules
+
+  try {
+    const firebaseRules = (await listFirebaseRules()).map(normalizeRule)
+    if (firebaseRules.length === 0) {
+      saveLocalRules(localRules)
+      await replaceFirebaseRules(localRules)
+      return localRules
+    }
+
+    const firebaseKeys = new Set(firebaseRules.map((rule) => `${rule.id}:${rule.version}`))
+    const localOnlyRules = localRules.filter((rule) => !firebaseKeys.has(`${rule.id}:${rule.version}`))
+    const rules = hydrateSystemRules([...firebaseRules, ...localOnlyRules])
+    saveLocalRules(rules)
+
+    const missingRules = rules.filter((rule) => !firebaseKeys.has(`${rule.id}:${rule.version}`))
+    await Promise.all(missingRules.map((rule) => saveFirebaseRule(rule)))
+
+    return rules
+  } catch (error) {
+    console.warn('Unable to load rules from Firebase; using local cache:', error)
+    return localRules
+  }
+}
+
 export function listRules(filter = {}) {
-  let rules = getLocalRules().map(normalizeRule)
+  let rules = hydrateSystemRules(getLocalRules())
   if (filter.status) {
     const s = Array.isArray(filter.status) ? filter.status : [filter.status]
     rules = rules.filter((r) => s.includes(r.status))
@@ -66,7 +105,7 @@ export function listRules(filter = {}) {
 
 export function getActivePublishedRules() {
   const now = new Date()
-  return getLocalRules().map(normalizeRule)
+  return hydrateSystemRules(getLocalRules())
     .filter((r) => r.status === RULE_STATUS.PUBLISHED)
     .filter((r) => {
       const ed = r.effectiveDate ? new Date(r.effectiveDate) : null
@@ -116,6 +155,18 @@ export function upsertRule(rule) {
   return enriched
 }
 
+export async function upsertRuleAsync(rule) {
+  const savedRule = upsertRule(rule)
+  if (hasFirebaseConfig) {
+    try {
+      await saveFirebaseRule(savedRule)
+    } catch (error) {
+      console.warn('Unable to save rule to Firebase:', error)
+    }
+  }
+  return savedRule
+}
+
 export function createRuleDraft(draft) {
   const rules = getLocalRules().map(normalizeRule)
   const now = new Date().toISOString()
@@ -133,6 +184,18 @@ export function createRuleDraft(draft) {
   }
   rules.push(rule)
   saveLocalRules(rules)
+  return rule
+}
+
+export async function createRuleDraftAsync(draft) {
+  const rule = createRuleDraft(draft)
+  if (hasFirebaseConfig) {
+    try {
+      await saveFirebaseRule(rule)
+    } catch (error) {
+      console.warn('Unable to save draft rule to Firebase:', error)
+    }
+  }
   return rule
 }
 
@@ -162,6 +225,18 @@ export function publishRule(id, author = 'system') {
   return { ok: true, rule: draft }
 }
 
+export async function publishRuleAsync(id, author = 'system') {
+  const result = publishRule(id, author)
+  if (result?.ok && hasFirebaseConfig) {
+    try {
+      await replaceFirebaseRules(getLocalRules().map(normalizeRule))
+    } catch (error) {
+      console.warn('Unable to publish rule to Firebase:', error)
+    }
+  }
+  return result
+}
+
 export function archiveRule(id, version) {
   const rules = getLocalRules()
   const rule = rules.find((r) => r.id === id && r.version === version)
@@ -173,6 +248,18 @@ export function archiveRule(id, version) {
   return rule
 }
 
+export async function archiveRuleAsync(id, version) {
+  const rule = archiveRule(id, version)
+  if (rule && hasFirebaseConfig) {
+    try {
+      await saveFirebaseRule(normalizeRule(rule))
+    } catch (error) {
+      console.warn('Unable to archive rule in Firebase:', error)
+    }
+  }
+  return rule
+}
+
 export function deleteRule(id, version) {
   const existing = getLocalRules().map(normalizeRule).find((r) => r.id === id && r.version === version)
   if (existing?.status === RULE_STATUS.PUBLISHED) return { ok: false, reason: 'Published rules must be archived, not deleted.' }
@@ -181,8 +268,32 @@ export function deleteRule(id, version) {
   return { ok: true }
 }
 
+export async function deleteRuleAsync(id, version) {
+  const result = deleteRule(id, version)
+  if (result?.ok && hasFirebaseConfig) {
+    try {
+      await deleteFirebaseRule(id, version)
+    } catch (error) {
+      console.warn('Unable to delete rule from Firebase:', error)
+    }
+  }
+  return result
+}
+
 export function resetToDefaultRules() {
   saveLocalRules(getDefaultRules())
+}
+
+export async function resetToDefaultRulesAsync() {
+  const rules = getDefaultRules().map(normalizeRule)
+  saveLocalRules(rules)
+  if (hasFirebaseConfig) {
+    try {
+      await replaceFirebaseRules(rules)
+    } catch (error) {
+      console.warn('Unable to reset Firebase rules:', error)
+    }
+  }
 }
 
 function actionSignature(action) {
