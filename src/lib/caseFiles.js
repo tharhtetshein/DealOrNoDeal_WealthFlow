@@ -176,7 +176,8 @@ export function getEvidenceCategoryForText(value) {
   if (/\b(address proof|residential proof|residence proof|utility bill|lease|driver.?s licence|driver.?s license)\b/.test(text)) return 'address_proof'
   if (/\b(singapore.*tax|iras|dual tax residency|tax residency|tax residency certificate|tax residency documentation|tax residency letter|residency certificate|residency notice)\b/.test(text)) return 'singapore_tax_residency'
   if (/\b(form 1040|us individual tax return|w-?2|us tax return)\b/.test(text)) return 'us_tax_return'
-  if (/\b(w-?9|fatca|self.?certification|specified us person|us person.*tax|taxpayer identification number|tin provided)\b/.test(text)) return 'fatca_documentation'
+  if (/\b(w-?9|taxpayer identification number|tin provided)\b/.test(text)) return 'w9_form'
+  if (/\b(fatca|self.?certification|specified us person|us person.*tax)\b/.test(text)) return 'fatca_self_certification'
   if (/\b(comprehensive net-worth|net worth statement|net-worth statement|asset breakdown|independent wealth verification|wealth verification|source of wealth declaration|sow declaration|declared source of wealth)\b/.test(text)) return 'source_of_wealth_declaration'
   if (/\b(source of wealth|sow|wealth verification|net worth|net-worth|asset statement|asset valuation|asset breakdown|property deed|financial statement|conversion rationale|conversion methodology|currency conversion|single currency)\b/.test(text)) return 'source_of_wealth_declaration'
   if (/\b(bank statement|source of funds|sof|salary transfer|bonus transfer|cash balance|liquidity|savings account)\b/.test(text)) return 'bank_statement'
@@ -195,7 +196,13 @@ export function getEvidenceCategoryForText(value) {
 }
 
 function getDocumentEvidenceCategory(document) {
-  return document?.evidenceCategory || getEvidenceCategoryForText(document)
+  if (document?.evidenceCategory && document.evidenceCategory !== 'fatca_documentation') {
+    return document.evidenceCategory
+  }
+  return getEvidenceCategoryForText({
+    ...document,
+    evidenceCategory: '',
+  }) || document?.evidenceCategory || null
 }
 
 function getUploadedEvidenceForCategory(caseFile, evidenceCategory) {
@@ -879,8 +886,7 @@ export function calculateReadinessScore(caseFile) {
   const percentage = Math.max(0, Math.min(100, baselinePercentage - readinessPenalty))
   const ruleRisk = snapshot?.computedMetrics?.finalRiskLevel || null
   const allMandatoryDocumentsUploaded = completionSummary.allRequiredComplete
-  const submissionBlockers = [
-    getRmSubmissionStatusBlocker(normalized.status),
+  const readinessGaps = [
     ...components.profile.missing.map((item) => `Missing profile field: ${item}`),
     components.profile.eligibilityWarning,
     ...components.documents.missing.map((item) => `Missing ${item}`),
@@ -888,7 +894,6 @@ export function calculateReadinessScore(caseFile) {
     ...components.aiExtraction.missing,
     ...components.sow.missing.map((item) => `Source of Wealth: ${item}`),
     ...components.risk.issues
-      .filter((issue) => /critical|high/i.test(issue.severity))
       .map((issue) => `Unresolved ${String(issue.severity).toLowerCase()} risk: ${issue.title}`),
   ].filter(Boolean)
   const canSubmit = RM_SUBMITTABLE_STATUSES.has(normalized.status)
@@ -910,7 +915,9 @@ export function calculateReadinessScore(caseFile) {
           : canSubmit
             ? 'Ready for Compliance'
             : 'Draft'
-  const nextBestAction = submissionBlockers[0] || (canSubmit ? 'Submit for compliance review.' : 'Review case readiness.')
+  const nextBestAction = getRmSubmissionStatusBlocker(normalized.status)
+    || readinessGaps[0]
+    || (canSubmit ? 'Submit for compliance review.' : 'Review case readiness.')
 
   return {
     percentage,
@@ -918,7 +925,8 @@ export function calculateReadinessScore(caseFile) {
     totalItems: components.profile.total + components.documents.total + components.aiExtraction.total + components.sow.total + 1,
     statusLabel,
     canSubmit,
-    submissionBlockers,
+    submissionBlockers: [],
+    readinessGaps,
     nextBestAction,
     components,
     profile: {

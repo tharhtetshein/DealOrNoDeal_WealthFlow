@@ -333,7 +333,13 @@ export default function ComplianceCaseReview({ onNavigate }) {
   const riskLevel = useMemo(() => getRiskLevel(caseFile, readinessScore), [caseFile, readinessScore])
   const riskFlags = useMemo(() => getRiskFlags(caseFile, completion || { missingRequiredDocuments: [] }), [caseFile, completion])
   const decisionNoteMissing = !String(decisionNote || '').trim()
-  const approveDisabled = !completion?.allRequiredComplete || riskFlags.some((flag) => /high|critical/i.test(String(flag.severity || ''))) || !checklist?.allComplete || decisionNoteMissing
+  const approvalIssues = [
+    !completion?.allRequiredComplete ? 'Required documents are not complete.' : '',
+    riskFlags.some((flag) => /high|critical/i.test(String(flag.severity || ''))) ? 'High or critical risk items remain open.' : '',
+    !checklist?.allComplete ? 'Compliance checklist is not complete.' : '',
+    decisionNoteMissing ? 'Decision note is required.' : '',
+  ].filter(Boolean)
+  const approveDisabled = approvalIssues.length > 0
   const anyDecisionDisabled = decisionNoteMissing
   const comments = [...(caseFile?.comments || [])].sort((a, b) => new Date(b.createdAt || 0) - new Date(a.createdAt || 0))
 
@@ -355,18 +361,20 @@ export default function ComplianceCaseReview({ onNavigate }) {
   const handleDecision = async (decision) => {
     if (!caseFile) return
     const trimmedNote = String(decisionNote || '').trim()
+    if (decision === 'approve' && approvalIssues.length > 0) {
+      setAttemptedSubmit(true)
+      setMessage(`Cannot approve yet: ${approvalIssues.join(' ')}`)
+      return
+    }
     if (!trimmedNote) {
       setAttemptedSubmit(true)
       setMessage('Decision note is required before submitting.')
       return
     }
     setAttemptedSubmit(false)
-    // Debug current status
-    console.log('Submitting decision:', decision, 'Current status:', caseFile.status)
     const result = await submitComplianceDecision(caseFile.id, decision, {
       note: trimmedNote,
     })
-    console.log('Decision result:', result)
     if (!result.ok) {
       setMessage(`Approval failed: ${result.reason}`)
       return
@@ -792,16 +800,17 @@ export default function ComplianceCaseReview({ onNavigate }) {
                   Decision note is required before submitting any action.
                 </p>
               )}
-              {approveDisabled && !decisionNoteMissing ? (
+              {approvalIssues.length > 0 ? (
                 <p className="mb-3 rounded-xl bg-warning/10 px-3 py-2 text-xs text-warning">
-                  Approve is disabled while checklist is incomplete, critical documents are missing, or high-risk items remain.
+                  Approve is unavailable: {approvalIssues.join(' ')}
                 </p>
               ) : null}
               <div className="space-y-2">
                 <button
                   onClick={() => handleDecision('approve')}
-                  disabled={approveDisabled}
-                  className="flex w-full items-center justify-center gap-2 rounded-xl bg-success px-4 py-2.5 text-sm font-semibold text-white hover:bg-success/90 disabled:cursor-not-allowed disabled:opacity-50"
+                  className={`flex w-full items-center justify-center gap-2 rounded-xl px-4 py-2.5 text-sm font-semibold text-white ${
+                    approveDisabled ? 'bg-success/60 hover:bg-success/70' : 'bg-success hover:bg-success/90'
+                  }`}
                 >
                   <CheckCircle2 className="h-4 w-4" />
                   Approve Case

@@ -222,7 +222,8 @@ function getEvidenceCategoryForText(value) {
   if (!text) return null
 
   if (/\b(form 1040|us individual tax return|w-?2|us tax return)\b/.test(text)) return 'us_tax_return'
-  if (/\b(w-?9|fatca|self.?certification|specified us person|us person.*tax|taxpayer identification number|tin provided)\b/.test(text)) return 'fatca_documentation'
+  if (/\b(w-?9|taxpayer identification number|tin provided)\b/.test(text)) return 'w9_form'
+  if (/\b(fatca|self.?certification|specified us person|us person.*tax)\b/.test(text)) return 'fatca_self_certification'
   if (/\b(singapore.*tax|iras|dual tax residency|tax residency certificate|tax residency documentation|tax residency letter|residency notice)\b/.test(text)) return 'singapore_tax_residency'
   if (/\b(rsu|restricted stock|stock compensation|stock plan|vesting|vested|grant)\b/.test(text)) return 'rsu_portfolio_support'
   if (/\b(portfolio growth|brokerage|investment portfolio|portfolio statement|listed securities)\b/.test(text)) return 'rsu_portfolio_support'
@@ -240,10 +241,15 @@ function getEvidenceCategoryForText(value) {
 
 function hasUploadedEvidenceForCategory(caseFile, evidenceCategory) {
   if (!evidenceCategory) return false
-  return (caseFile?.documents || []).some((document) => (
-    document.evidenceCategory === evidenceCategory
-    || getEvidenceCategoryForText(document) === evidenceCategory
-  ))
+  return (caseFile?.documents || []).some((document) => {
+    if (document.evidenceCategory === evidenceCategory && document.evidenceCategory !== 'fatca_documentation') {
+      return true
+    }
+    return getEvidenceCategoryForText({
+      ...document,
+      evidenceCategory: '',
+    }) === evidenceCategory
+  })
 }
 
 function compare(actual, op, expected) {

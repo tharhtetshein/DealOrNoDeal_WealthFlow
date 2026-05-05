@@ -485,7 +485,8 @@ function getUploadTypeForAction(actionText) {
   if (/ongoing monitoring|periodic review|monitoring|ownership structure/.test(text)) return 'Enhanced Ongoing Monitoring Plan'
   if (/enhanced due.?diligence|\bedd\b|cross-border employment/.test(text)) return 'Enhanced Due Diligence Screening'
   if (/singapore.*tax|iras|dual tax residency|tax residency certificate|tax residency documentation|residency letter/.test(text)) return 'Singapore Tax Residency Evidence'
-  if (/w-?9|fatca|self.?certification|us person.*tax/.test(text)) return 'W-9 / FATCA Documentation'
+  if (/w-?9|taxpayer identification number|tin provided/.test(text)) return 'W-9 Form'
+  if (/fatca|self.?certification|specified us person|us person.*tax/.test(text)) return 'FATCA Self-Certification'
   if (/form 1040|us individual tax return|taxable income/.test(text)) return 'US Tax Return / Form 1040'
   if (/share.?sale|cash proceeds|transaction confirmation|secondary share/.test(text)) return 'Certified Share-Sale Proceeds Confirmation'
   if (/address|utility/.test(text)) return 'Address Proof'
@@ -504,10 +505,15 @@ const EVIDENCE_CATEGORY_DEFINITIONS = {
     uploadType: 'Singapore Tax Residency Evidence',
     match: /\b(singapore.*tax|iras|tax residency certificate|tax residency documentation|tax residency letter|dual tax residency|residency certificate|residency notice)\b/i,
   },
-  fatca_documentation: {
-    label: 'W-9 / FATCA Documentation',
-    uploadType: 'W-9 / FATCA Documentation',
-    match: /\b(w-?9|fatca|self.?certification|specified us person|us person.*tax|taxpayer identification number|tin provided)\b/i,
+  w9_form: {
+    label: 'W-9 Form',
+    uploadType: 'W-9 Form',
+    match: /\b(w-?9|taxpayer identification number|tin provided)\b/i,
+  },
+  fatca_self_certification: {
+    label: 'FATCA Self-Certification',
+    uploadType: 'FATCA Self-Certification',
+    match: /\b(fatca|self.?certification|specified us person|us person.*tax)\b/i,
   },
   rsu_portfolio_support: {
     label: 'RSU / Portfolio Growth Support',
@@ -561,7 +567,8 @@ function getEvidenceCategoryForText(value) {
   if (!text) return null
 
   if (/\b(form 1040|us individual tax return|w-?2|us tax return)\b/.test(text)) return 'us_tax_return'
-  if (/\b(w-?9|fatca|self.?certification|specified us person|us person.*tax|taxpayer identification number|tin provided)\b/.test(text)) return 'fatca_documentation'
+  if (/\b(w-?9|taxpayer identification number|tin provided)\b/.test(text)) return 'w9_form'
+  if (/\b(fatca|self.?certification|specified us person|us person.*tax)\b/.test(text)) return 'fatca_self_certification'
   if (/\b(singapore.*tax|iras|dual tax residency|tax residency certificate|tax residency documentation|tax residency letter|residency notice)\b/.test(text)) return 'singapore_tax_residency'
   if (/\b(rsu|restricted stock|stock compensation|stock plan|vesting|vested|grant)\b/.test(text)) return 'rsu_portfolio_support'
   if (/\b(portfolio growth|brokerage|investment portfolio|portfolio statement|listed securities)\b/.test(text)) return 'rsu_portfolio_support'
@@ -582,8 +589,11 @@ function getEvidenceDefinition(category, fallbackText = '') {
   if (category === 'us_tax_return') {
     return { label: 'US Tax Return / Form 1040', uploadType: 'US Tax Return / Form 1040' }
   }
-  if (category === 'fatca_documentation') {
-    return { label: 'W-9 / FATCA Documentation', uploadType: 'W-9 / FATCA Documentation' }
+  if (category === 'w9_form') {
+    return { label: 'W-9 Form', uploadType: 'W-9 Form' }
+  }
+  if (category === 'fatca_self_certification') {
+    return { label: 'FATCA Self-Certification', uploadType: 'FATCA Self-Certification' }
   }
   if (category === 'screening') {
     return { label: 'Screening Evidence', uploadType: 'Full Sanctions, PEP, and Adverse Media Screening' }
@@ -943,7 +953,7 @@ function buildAuditEntries(caseFile) {
       timestampRaw: snapshot.evaluatedAt,
       timestamp: formatDateTime(snapshot.evaluatedAt),
       actor: 'Rule Engine',
-      action: 'Resolved rule-created submission blockers.',
+      action: 'Resolved rule-created review holds.',
     }]
   })
 
@@ -1150,7 +1160,8 @@ export default function CaseDetail({ onNavigate, role = 'ops' }) {
         ruleRequiredDocuments: [],
         missingRuleRequiredDocuments: [],
         ruleBlockers: [],
-        submissionBlockers: ['Select a case from the dashboard.'],
+        submissionBlockers: [],
+        readinessGaps: [],
         statusLabel: 'Draft',
         uploadedRequiredCount: 0,
         missingRequiredCount: 0,
@@ -1313,7 +1324,8 @@ export default function CaseDetail({ onNavigate, role = 'ops' }) {
       ruleRequiredDocuments: completionSummary.ruleRequiredDocuments,
       missingRuleRequiredDocuments: completionSummary.missingRuleRequiredDocuments,
       ruleBlockers: readinessSummary?.rules?.blockers || ruleSnapshot?.aggregatedActions?.blockers || [],
-      submissionBlockers: readinessSummary?.submissionBlockers || [],
+      submissionBlockers: [],
+      readinessGaps: readinessSummary?.readinessGaps || [],
       statusLabel: readinessSummary?.statusLabel || caseFile.status,
       uploadedRequiredCount: completionSummary.uploadedRequiredCount,
       missingRequiredCount: completionSummary.missingRequiredCount,
@@ -1920,6 +1932,59 @@ export default function CaseDetail({ onNavigate, role = 'ops' }) {
       </SectionCard>
     )
   }
+
+  const getReadinessSuggestedActions = () => {
+    const breakdown = derived.readinessBreakdown || {}
+    const gapItems = [
+      ...(breakdown.profile?.missing || []).map((item) => ({
+        section: 'Client Profile',
+        title: item,
+        detail: 'Complete this profile field.',
+        severity: 'Medium',
+      })),
+      ...(breakdown.profile?.eligibilityWarning ? [{
+        section: 'Client Profile',
+        title: 'AUM eligibility',
+        detail: breakdown.profile.eligibilityWarning,
+        severity: 'High',
+      }] : []),
+      ...(breakdown.documents?.missing || []).map((item) => ({
+        section: 'Documents',
+        title: item,
+        detail: 'Upload the required document.',
+        severity: 'High',
+      })),
+      ...(breakdown.documents?.needsReview || []).map((item) => ({
+        section: 'Documents',
+        title: item,
+        detail: 'Review or replace this uploaded document.',
+        severity: 'Medium',
+      })),
+      ...(breakdown.aiExtraction?.missing || []).map((item) => ({
+        section: 'AI Extraction Review',
+        title: item,
+        detail: 'Complete this AI review step.',
+        severity: 'Medium',
+      })),
+      ...(breakdown.sourceOfWealth?.missing || []).map((item) => ({
+        section: 'Source of Wealth',
+        title: item,
+        detail: 'Strengthen the SoW narrative or upload supporting evidence.',
+        severity: 'Medium',
+      })),
+      ...(breakdown.risk?.issues || []).map((item) => ({
+        section: 'Risk Resolution',
+        title: item.title || 'Risk issue',
+        detail: item.description || 'Resolve this risk item before the case can reach full readiness.',
+        severity: item.severity || 'Medium',
+        evidenceCategory: item.evidenceCategory,
+      })),
+    ]
+    return Array.from(
+      new Map(gapItems.map((item) => [`${item.section}-${item.title}-${item.detail}`, item])).values(),
+    )
+  }
+
   const renderAiInsights = () => (
     <SectionCard
       title="AI Insights"
@@ -1976,6 +2041,45 @@ export default function CaseDetail({ onNavigate, role = 'ops' }) {
         }
 
         const visibleActions = buildNormalizedSuggestedActions(derived.analysisData.suggestions, caseFile)
+        const readinessActions = getReadinessSuggestedActions()
+        const actionKeys = new Set()
+        const combinedActions = [
+          ...readinessActions.map((item, index) => {
+            const evidenceDefinition = item.evidenceCategory ? getEvidenceDefinition(item.evidenceCategory, item.title) : null
+            const uploadType = item.section === 'Documents'
+              ? item.title
+              : item.section === 'Risk Resolution' && evidenceDefinition?.uploadType
+                ? evidenceDefinition.uploadType
+                : 'Additional Supporting Evidence'
+            return {
+              suggestedActionId: `readiness_gap_${item.section}_${item.title}_${index}`.toLowerCase().replace(/[^a-z0-9]+/g, '_'),
+              title: item.title,
+              text: item.detail,
+              priority: /critical|high/i.test(item.severity) ? 'High' : 'Medium',
+              evidenceLabel: evidenceDefinition?.label || item.section,
+              uploadType,
+              evidenceCategory: item.evidenceCategory || getEvidenceCategoryForText(`${item.title} ${item.detail}`),
+              uploadedCount: 0,
+              coveredDocuments: [],
+              readinessGap: true,
+            }
+          }),
+          ...visibleActions,
+        ].map((action) => {
+          const uploadType = action.uploadType || getUploadTypeForAction(`${action.title} ${action.text}`) || 'Additional Supporting Evidence'
+          const evidenceLabel = action.evidenceLabel || uploadType
+          return {
+            ...action,
+            uploadType,
+            evidenceLabel,
+            evidenceCategory: action.evidenceCategory || getEvidenceCategoryForText(`${action.title} ${action.text}`),
+          }
+        }).filter((action) => {
+          const key = `${action.evidenceCategory || action.uploadType || action.title}-${action.text}`.toLowerCase()
+          if (actionKeys.has(key)) return false
+          actionKeys.add(key)
+          return true
+        })
 
         return (
           <>
@@ -2085,13 +2189,15 @@ export default function CaseDetail({ onNavigate, role = 'ops' }) {
               <h3 className="text-sm font-semibold text-on-surface">Suggested Actions</h3>
             </div>
             <div className="space-y-3">
-              {visibleActions.length > 0 ? visibleActions.map((action) => (
+              {combinedActions.length > 0 ? combinedActions.map((action) => (
                 <div
                   key={action.suggestedActionId}
                   className={`rounded-xl border px-4 py-3 ${
                     action.uploadedCount > 0
                       ? 'border-success/15 bg-success/5'
-                      : 'border-transparent bg-surface-container-lowest'
+                      : action.readinessGap
+                        ? 'border-warning/20 bg-warning/5'
+                        : 'border-transparent bg-surface-container-lowest'
                   }`}
                 >
                   <div className="flex items-start gap-3">
@@ -2101,7 +2207,7 @@ export default function CaseDetail({ onNavigate, role = 'ops' }) {
                         <span className={`rounded-full px-2.5 py-1 text-xs font-semibold ${getPriorityTone(action.priority)}`}>
                           {action.priority}
                         </span>
-                        {action.uploadType ? (
+                        {action.uploadType || action.readinessGap ? (
                           <span className={`rounded-full px-2.5 py-1 text-xs font-semibold ${
                             action.uploadedCount > 0 ? 'bg-success/12 text-success' : 'bg-surface text-on-surface-variant'
                           }`}>
@@ -2124,23 +2230,21 @@ export default function CaseDetail({ onNavigate, role = 'ops' }) {
                           Merged {action.relatedSuggestions.length} similar AI suggestions for this evidence.
                         </p>
                       ) : null}
-                      {action.uploadType ? (
-                        <button
-                          onClick={() => triggerUploadForType(action.uploadType, {
-                            suggestedActionId: action.suggestedActionId,
-                            text: action.text,
-                            evidenceCategory: action.evidenceCategory,
-                          })}
-                          disabled={action.uploadedCount > 0}
-                          className={`mt-3 rounded-lg px-3 py-1.5 text-xs font-semibold transition-colors ${
-                            action.uploadedCount > 0
-                              ? 'cursor-not-allowed border border-success/15 bg-success/5 text-success'
-                              : 'bg-primary text-white hover:bg-primary/90'
-                          }`}
-                        >
-                          {action.uploadedCount > 0 ? 'Evidence already uploaded' : action.priority === 'High' ? 'Upload evidence' : 'Upload optional evidence'}
-                        </button>
-                      ) : null}
+                      <button
+                        onClick={() => triggerUploadForType(action.uploadType, {
+                          suggestedActionId: action.suggestedActionId,
+                          text: action.text,
+                          evidenceCategory: action.evidenceCategory,
+                        })}
+                        disabled={action.uploadedCount > 0}
+                        className={`mt-3 rounded-lg px-3 py-1.5 text-xs font-semibold transition-colors ${
+                          action.uploadedCount > 0
+                            ? 'cursor-not-allowed border border-success/15 bg-success/5 text-success'
+                            : 'bg-primary text-white hover:bg-primary/90'
+                        }`}
+                      >
+                        {action.uploadedCount > 0 ? 'Evidence already uploaded' : action.priority === 'High' ? 'Upload evidence' : 'Upload optional evidence'}
+                      </button>
                     </div>
                   </div>
                 </div>
@@ -2369,12 +2473,12 @@ export default function CaseDetail({ onNavigate, role = 'ops' }) {
                     <p>Risk modifiers: {(actions.riskModifiers || []).length}</p>
                     <p>Readiness penalties: {(actions.readinessPenalties || []).length}</p>
                     <p>Checklist items: {(actions.checklistItems || []).length}</p>
-                    <p>Submission blockers: {(actions.blockers || []).length}</p>
+                    <p>Review holds: {(actions.blockers || []).length}</p>
                   </div>
                 </div>
                 {(actions.blockers || []).map((blocker, index) => (
                   <div key={index} className="rounded-2xl border border-error/15 bg-error/5 p-4">
-                    <p className="text-sm font-semibold text-error">Blocker</p>
+                    <p className="text-sm font-semibold text-error">Review Hold</p>
                     <p className="mt-2 text-sm text-on-surface-variant">{blocker.reason}</p>
                   </div>
                 ))}
@@ -2397,7 +2501,7 @@ export default function CaseDetail({ onNavigate, role = 'ops' }) {
       ? buildNormalizedSuggestedActions(derived.analysisData.suggestions, caseFile)
         .filter((action) => action.text && action.priority === 'High' && action.uploadedCount === 0)
       : []
-    const blockers = [
+    const openIssues = [
       ...derived.missingRequiredDocuments.map((item) => ({
         title: item.label,
         severity: 'High',
@@ -2442,28 +2546,20 @@ export default function CaseDetail({ onNavigate, role = 'ops' }) {
           uploadType: issue.evidenceCategory ? getEvidenceDefinition(issue.evidenceCategory, issue.title).uploadType : null,
           evidenceCategory: issue.evidenceCategory,
         })),
-      ...derived.submissionBlockers
-        .filter((reason) => !derived.missingRequiredDocuments.some((item) => reason.includes(item.label)))
-        .map((reason) => ({
-          title: 'Readiness blocker',
-          severity: /critical|high|below USD/i.test(reason) ? 'High' : 'Medium',
-          description: reason,
-          action: 'Resolve this item before submission.',
-        })),
     ]
 
     return (
-      <SectionCard title="Risk & Issues" description="Submission blockers and compliance-critical findings." icon={ShieldAlert}>
+      <SectionCard title="Risk & Issues" description="Open review items and compliance-critical findings." icon={ShieldAlert}>
         <div className="grid grid-cols-1 xl:grid-cols-[minmax(0,1fr)_360px] gap-6">
           <div className="rounded-2xl border border-outline/10 bg-surface p-4">
             <div className="flex flex-wrap items-center justify-between gap-3 mb-4">
-              <h3 className="text-sm font-semibold text-on-surface">Submission Blockers</h3>
-              <span className={`inline-flex rounded-full px-3 py-1 text-xs font-semibold ${blockers.length > 0 ? 'bg-error/10 text-error' : 'bg-success/12 text-success'}`}>
-                {blockers.length > 0 ? `${blockers.length} open` : 'Clear'}
+              <h3 className="text-sm font-semibold text-on-surface">Open Issues</h3>
+              <span className={`inline-flex rounded-full px-3 py-1 text-xs font-semibold ${openIssues.length > 0 ? 'bg-error/10 text-error' : 'bg-success/12 text-success'}`}>
+                {openIssues.length > 0 ? `${openIssues.length} open` : 'Clear'}
               </span>
             </div>
             <div className="space-y-3">
-              {blockers.length > 0 ? blockers.map((item, index) => (
+              {openIssues.length > 0 ? openIssues.map((item, index) => (
                 <div key={`${item.title}-${index}`} className="rounded-xl border border-error/15 bg-error/5 px-4 py-4">
                   <div className="flex flex-wrap items-start justify-between gap-3">
                     <div className="min-w-0">
@@ -2490,7 +2586,7 @@ export default function CaseDetail({ onNavigate, role = 'ops' }) {
                 </div>
               )) : (
                 <div className="rounded-xl bg-success/5 border border-success/10 px-4 py-4">
-                  <p className="text-sm font-semibold text-success">No submission blockers.</p>
+                  <p className="text-sm font-semibold text-success">No open issues.</p>
                   <p className="mt-1 text-sm text-on-surface-variant">Required documents are complete and no high-priority risk findings are open.</p>
                 </div>
               )}
@@ -2617,7 +2713,7 @@ export default function CaseDetail({ onNavigate, role = 'ops' }) {
               <button
                 onClick={handleSubmit}
                 disabled={!canSubmit || submitting}
-                title={!canSubmit ? (derived.submissionBlockers[0] || 'Complete readiness checks before submission.') : 'Submit for Compliance Review'}
+                title={!canSubmit ? 'Complete readiness checks before submission.' : 'Submit for Compliance Review'}
                 className="inline-flex items-center gap-2 rounded-2xl bg-primary px-4 py-2 text-sm font-semibold text-white hover:bg-primary/90 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
               >
                 {submitting ? <Loader2 className="w-4 h-4 animate-spin" /> : <Send className="w-4 h-4" />}
@@ -2686,7 +2782,7 @@ export default function CaseDetail({ onNavigate, role = 'ops' }) {
               })}
             </div>
             {caseFile.status === CASE_STATUS.ACTION_REQUIRED ? (
-              <p className="mt-3 text-xs text-warning">Returned to RM for missing documents, rejected evidence, clarifications, AI follow-up, or unresolved rule blockers.</p>
+              <p className="mt-3 text-xs text-warning">Returned to RM for missing documents, rejected evidence, clarifications, AI follow-up, or unresolved review holds.</p>
             ) : null}
             {caseFile.status === CASE_STATUS.ESCALATED ? (
               <div className="mt-3 rounded-xl bg-error/5 px-3 py-3 text-xs text-on-surface-variant">
