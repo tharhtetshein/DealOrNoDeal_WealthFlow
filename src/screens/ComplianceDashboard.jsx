@@ -242,7 +242,7 @@ export default function ComplianceDashboard({ onBack, clientData, documents, sow
                   <div className="flex items-start gap-2">
                     <AlertTriangle className="w-5 h-5 text-red-600 mt-0.5" />
                     <div>
-                      <p className="font-semibold text-red-900 text-sm">Action Required</p>
+                      <p className="font-semibold text-red-900 text-sm">Request More Information</p>
                       <p className="text-xs text-red-700 mt-1">
                         Critical documents are missing. Please complete document upload before submission.
                       </p>

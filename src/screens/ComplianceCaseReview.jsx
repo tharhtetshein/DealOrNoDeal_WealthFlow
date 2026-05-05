@@ -5,6 +5,7 @@ import {
   CheckCircle2,
   CheckSquare,
   Circle,
+  Download,
   Eye,
   FileText,
   MessageCircle,
@@ -19,11 +20,11 @@ import {
 import {
   addComplianceComment,
   CASE_STATUS,
+  calculateReadinessScore,
   getActiveCaseId,
   getCaseFileById,
   getComplianceChecklistStatus,
   getDocumentCompletionSummary,
-  getReadinessScore,
   reviewDocument,
   submitComplianceDecision,
   updateCaseData,
@@ -119,7 +120,7 @@ function getRiskFlags(caseFile, completion) {
   if (caseFile?.status === CASE_STATUS.ACTION_REQUIRED) {
     readinessFlags.push({
       id: 'readiness-action-required',
-      title: 'Action Required from RM',
+      title: 'Request More Information from RM',
       severity: 'Medium',
       description: 'Compliance previously requested more information. Awaiting RM response.',
     })
@@ -134,6 +135,19 @@ function getSourceOfWealth(caseFile) {
     || caseFile?.aiAnalysis?.extractedData?.sourceOfWealthIndicators?.value
     || caseFile?.purpose
     || 'Not available'
+}
+
+function getSowNarrative(caseFile) {
+  return caseFile?.sowDraft?.narrativeSummary
+    || caseFile?.aiAnalysis?.sourceOfWealthDraft?.narrativeExplanation
+    || caseFile?.aiAnalysis?.sowDraft?.narrativeSummary
+    || ''
+}
+
+function getSowSupportingEvidence(caseFile) {
+  return caseFile?.sowDraft?.supportingEvidence
+    || caseFile?.aiAnalysis?.sourceOfWealthDraft?.supportingEvidence
+    || ''
 }
 
 function escapeHtml(value) {
@@ -160,6 +174,75 @@ export default function ComplianceCaseReview({ onNavigate }) {
   const [documentCommentText, setDocumentCommentText] = useState('')
   const [attemptedSubmit, setAttemptedSubmit] = useState(false)
 
+  const renderDocumentControls = (document) => {
+    const currentReviewStatus = document.reviewStatus
+    return (
+      <div key={document.id || document.name} className="rounded-xl border border-outline/10 bg-surface-container-lowest px-3 py-3">
+        <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
+          <p className="min-w-0 text-xs font-semibold text-on-surface">
+            {document.name || document.category || 'Uploaded document'}
+          </p>
+          {currentReviewStatus ? (
+            <span className={`rounded-full px-2.5 py-1 text-xs font-semibold ${
+              currentReviewStatus === 'accept' ? 'bg-success/12 text-success' :
+              currentReviewStatus === 'needs_clarification' ? 'bg-warning/15 text-warning' :
+              'bg-error/10 text-error'
+            }`}>
+              {currentReviewStatus === 'accept' ? 'Accepted' : currentReviewStatus === 'needs_clarification' ? 'Needs Clarification' : 'Rejected'}
+            </span>
+          ) : null}
+        </div>
+        <div className="flex flex-wrap gap-2">
+          <button
+            onClick={() => handleViewDocument(document)}
+            className="inline-flex items-center gap-1 rounded-full border border-primary/20 bg-primary/10 px-2.5 py-1 text-xs font-semibold text-primary hover:bg-primary/15"
+          >
+            <Eye className="h-3 w-3" />
+            Open Full Document
+          </button>
+          <button
+            onClick={() => setSelectedDocument(document)}
+            className="inline-flex items-center gap-1 rounded-full border border-outline/20 bg-surface px-2.5 py-1 text-xs font-semibold text-on-surface hover:border-primary/30"
+          >
+            <FileText className="h-3 w-3" />
+            Preview
+          </button>
+          <button
+            onClick={() => handleDocumentReview(document.id, 'accept')}
+            disabled={currentReviewStatus === 'accept'}
+            className="inline-flex items-center gap-1 rounded-full border border-success/30 bg-success/10 px-2.5 py-1 text-xs font-semibold text-success hover:bg-success/15 disabled:opacity-50"
+          >
+            <ThumbsUp className="h-3 w-3" />
+            Accept
+          </button>
+          <button
+            onClick={() => handleDocumentReview(document.id, 'needs_clarification')}
+            disabled={currentReviewStatus === 'needs_clarification'}
+            className="inline-flex items-center gap-1 rounded-full border border-warning/30 bg-warning/10 px-2.5 py-1 text-xs font-semibold text-warning hover:bg-warning/15 disabled:opacity-50"
+          >
+            <AlertTriangle className="h-3 w-3" />
+            Needs Clarification
+          </button>
+          <button
+            onClick={() => handleDocumentReview(document.id, 'reject')}
+            disabled={currentReviewStatus === 'reject'}
+            className="inline-flex items-center gap-1 rounded-full border border-error/30 bg-error/10 px-2.5 py-1 text-xs font-semibold text-error hover:bg-error/15 disabled:opacity-50"
+          >
+            <ThumbsDown className="h-3 w-3" />
+            Reject
+          </button>
+          <button
+            onClick={() => setDocumentCommentModal({ documentId: document.id, action: 'comment', existingComment: document.reviewComment })}
+            className="inline-flex items-center gap-1 rounded-full border border-outline/20 bg-surface px-2.5 py-1 text-xs font-semibold text-on-surface hover:border-primary/30"
+          >
+            <MessageSquare className="h-3 w-3" />
+            {document.reviewComment ? 'Edit Comment' : 'Add Comment'}
+          </button>
+        </div>
+      </div>
+    )
+  }
+
   const loadCase = async () => {
     setLoading(true)
     const caseId = getActiveCaseId()
@@ -177,7 +260,7 @@ export default function ComplianceCaseReview({ onNavigate }) {
         setMessage(`Failed to transition case status from Submitted for Review`)
       }
     }
-    const nextReadiness = caseId ? await getReadinessScore(caseId) : null
+    const nextReadiness = nextCase ? calculateReadinessScore(nextCase) : null
     setCaseFile(nextCase)
     setReadiness(nextReadiness)
     setCompletion(nextCase ? getDocumentCompletionSummary(nextCase) : null)
@@ -333,6 +416,46 @@ export default function ComplianceCaseReview({ onNavigate }) {
     documentWindow.document.close()
   }
 
+  const handleDownloadSowDocument = () => {
+    if (!caseFile) return
+    const fileStem = `${caseFile.clientName || 'client'}-source-of-wealth`
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, '-')
+      .replace(/^-|-$/g, '')
+    const documentHtml = `<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>Source of Wealth - ${escapeHtml(caseFile.clientName)}</title>
+  <style>
+    body { font-family: Arial, sans-serif; color: #1f1b16; line-height: 1.55; margin: 48px; }
+    h1 { font-size: 24px; margin: 0 0 8px; }
+    h2 { font-size: 14px; letter-spacing: 2px; text-transform: uppercase; margin: 28px 0 8px; color: #6f4a3a; }
+    p { font-size: 12px; margin: 0 0 12px; }
+    .meta { color: #6f625b; font-size: 11px; margin-bottom: 24px; }
+    .box { border: 1px solid #e5ded9; padding: 16px; border-radius: 8px; margin-bottom: 16px; }
+  </style>
+</head>
+<body>
+  <h1>Source of Wealth Summary</h1>
+  <p class="meta">Client: ${escapeHtml(caseFile.clientName || 'Client')} | Case ID: ${escapeHtml(caseFile.id || '')} | Generated: ${escapeHtml(formatDateTime(new Date().toISOString()))}</p>
+  <div class="box"><h2>Primary Source of Wealth</h2><p>${escapeHtml(getSourceOfWealth(caseFile))}</p></div>
+  <div class="box"><h2>Supporting Evidence</h2><p>${escapeHtml(getSowSupportingEvidence(caseFile) || 'Not available')}</p></div>
+  <div class="box"><h2>Narrative Summary</h2><p>${escapeHtml(getSowNarrative(caseFile) || getSourceOfWealth(caseFile))}</p></div>
+  <p class="meta">Prepared for Compliance review.</p>
+</body>
+</html>`
+    const blob = new Blob(['\ufeff', documentHtml], { type: 'application/msword' })
+    const url = URL.createObjectURL(blob)
+    const link = document.createElement('a')
+    link.href = url
+    link.download = `${fileStem || 'source-of-wealth'}.doc`
+    document.body.appendChild(link)
+    link.click()
+    document.body.removeChild(link)
+    URL.revokeObjectURL(url)
+  }
+
   if (loading) {
     return (
       <div className="min-h-screen bg-surface p-8">
@@ -406,13 +529,22 @@ export default function ComplianceCaseReview({ onNavigate }) {
                   ['Nationality', caseFile.nationality],
                   ['Occupation', caseFile.occupation],
                   ['Risk Level', riskLevel],
-                  ['Source of Wealth', getSourceOfWealth(caseFile)],
-                ].map(([label, value]) => (
-                  <div key={label} className="rounded-2xl bg-surface p-4">
+                  ['Source of Wealth', getSourceOfWealth(caseFile), 'md:col-span-2'],
+                ].map(([label, value, spanClass = '']) => (
+                  <div key={label} className={`rounded-2xl bg-surface p-4 ${spanClass}`}>
                     <p className="text-xs uppercase tracking-[0.16em] text-on-surface-variant">{label}</p>
-                    <p className="mt-3 text-sm font-semibold leading-6 text-on-surface">{value || '--'}</p>
+                    <p className={`mt-3 text-sm leading-6 text-on-surface ${label === 'Source of Wealth' ? 'font-medium max-w-4xl' : 'font-semibold'}`}>{value || '--'}</p>
                   </div>
                 ))}
+              </div>
+              <div className="mt-4 flex justify-end">
+                <button
+                  onClick={handleDownloadSowDocument}
+                  className="inline-flex items-center gap-2 rounded-xl border border-primary/20 bg-primary/10 px-3 py-2 text-xs font-semibold text-primary hover:bg-primary/15"
+                >
+                  <Download className="h-4 w-4" />
+                  Download SoW Document
+                </button>
               </div>
             </section>
 
@@ -424,6 +556,7 @@ export default function ComplianceCaseReview({ onNavigate }) {
               <div className="space-y-3">
                 {(completion?.requiredDocuments || []).map((item) => {
                   const validation = getDocumentValidation(item)
+                  const linkedDocuments = item.documents || []
                   const firstDoc = item.documents?.[0] || null
                   const docReviewStatus = firstDoc?.reviewStatus
                   return (
@@ -452,58 +585,39 @@ export default function ComplianceCaseReview({ onNavigate }) {
                           )}
                         </div>
                       </div>
-                      {firstDoc && (
-                        <div className="mt-4 flex flex-wrap gap-2 border-t border-outline/10 pt-3">
-                          <button
-                            onClick={() => handleViewDocument(firstDoc)}
-                            className="inline-flex items-center gap-1 rounded-full border border-outline/20 bg-surface-container-lowest px-2.5 py-1 text-xs font-semibold text-on-surface hover:border-primary/30"
-                          >
-                            <Eye className="h-3 w-3" />
-                            View
-                          </button>
-                          <button
-                            onClick={() => setSelectedDocument(firstDoc)}
-                            className="inline-flex items-center gap-1 rounded-full border border-outline/20 bg-surface-container-lowest px-2.5 py-1 text-xs font-semibold text-on-surface hover:border-primary/30"
-                          >
-                            <FileText className="h-3 w-3" />
-                            Preview
-                          </button>
-                          <button
-                            onClick={() => handleDocumentReview(firstDoc.id, 'accept')}
-                            disabled={docReviewStatus === 'accept'}
-                            className="inline-flex items-center gap-1 rounded-full border border-success/30 bg-success/10 px-2.5 py-1 text-xs font-semibold text-success hover:bg-success/15 disabled:opacity-50"
-                          >
-                            <ThumbsUp className="h-3 w-3" />
-                            Accept
-                          </button>
-                          <button
-                            onClick={() => handleDocumentReview(firstDoc.id, 'needs_clarification')}
-                            disabled={docReviewStatus === 'needs_clarification'}
-                            className="inline-flex items-center gap-1 rounded-full border border-warning/30 bg-warning/10 px-2.5 py-1 text-xs font-semibold text-warning hover:bg-warning/15 disabled:opacity-50"
-                          >
-                            <AlertTriangle className="h-3 w-3" />
-                            Needs Clarification
-                          </button>
-                          <button
-                            onClick={() => handleDocumentReview(firstDoc.id, 'reject')}
-                            disabled={docReviewStatus === 'reject'}
-                            className="inline-flex items-center gap-1 rounded-full border border-error/30 bg-error/10 px-2.5 py-1 text-xs font-semibold text-error hover:bg-error/15 disabled:opacity-50"
-                          >
-                            <ThumbsDown className="h-3 w-3" />
-                            Reject
-                          </button>
-                          <button
-                            onClick={() => setDocumentCommentModal({ documentId: firstDoc.id, action: 'comment', existingComment: firstDoc.reviewComment })}
-                            className="inline-flex items-center gap-1 rounded-full border border-outline/20 bg-surface-container-lowest px-2.5 py-1 text-xs font-semibold text-on-surface hover:border-primary/30"
-                          >
-                            <MessageSquare className="h-3 w-3" />
-                            {firstDoc.reviewComment ? 'Edit Comment' : 'Add Comment'}
-                          </button>
+                      {linkedDocuments.length > 0 && (
+                        <div className="mt-4 space-y-3 border-t border-outline/10 pt-3">
+                          {linkedDocuments.map((document) => renderDocumentControls(document))}
                         </div>
                       )}
                     </div>
                   )
                 })}
+                {(() => {
+                  const shownIds = new Set((completion?.requiredDocuments || []).flatMap((item) => (
+                    item.documents || []
+                  )).map((document) => document.id || document.name))
+                  const additionalDocuments = (caseFile.documents || []).filter((document) => !shownIds.has(document.id || document.name))
+
+                  if (additionalDocuments.length === 0) return null
+
+                  return (
+                    <div className="rounded-2xl border border-outline/10 bg-surface p-4">
+                      <div className="flex flex-wrap items-start justify-between gap-3">
+                        <div>
+                          <p className="font-semibold text-on-surface">Additional RM Uploaded Evidence</p>
+                          <p className="mt-1 text-xs text-on-surface-variant">Optional evidence and supporting documents uploaded by the RM.</p>
+                        </div>
+                        <span className="rounded-full bg-primary/10 px-2.5 py-1 text-xs font-semibold text-primary">
+                          {additionalDocuments.length} file{additionalDocuments.length > 1 ? 's' : ''}
+                        </span>
+                      </div>
+                      <div className="mt-4 space-y-3 border-t border-outline/10 pt-3">
+                        {additionalDocuments.map((document) => renderDocumentControls(document))}
+                      </div>
+                    </div>
+                  )
+                })()}
               </div>
             </section>
 

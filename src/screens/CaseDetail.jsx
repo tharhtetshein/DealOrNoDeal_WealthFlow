@@ -6,6 +6,7 @@ import {
   Building2,
   CheckCheck,
   CheckCircle2,
+  Download,
   FileBadge2,
   FileText,
   Globe2,
@@ -565,14 +566,15 @@ function getEvidenceCategoryForText(value) {
   if (/\b(rsu|restricted stock|stock compensation|stock plan|vesting|vested|grant)\b/.test(text)) return 'rsu_portfolio_support'
   if (/\b(portfolio growth|brokerage|investment portfolio|portfolio statement|listed securities)\b/.test(text)) return 'rsu_portfolio_support'
   if (/\b(bank statement|source of funds|sof|salary transfer|bonus transfer|cash balance|liquidity)\b/.test(text)) return 'bank_statement'
+  if (/\b(sanctions?|pep|adverse media|screening)\b/.test(text)) return 'screening'
+  if (/\b(enhanced due.?diligence|\bedd\b|sector concentration|high net worth us person)\b/.test(text)) return 'enhanced_due_diligence'
+  if (/\b(ongoing transaction monitoring|transaction monitoring|periodic review|annual review|ongoing monitoring|review of source-of-wealth|tax residency status)\b/.test(text)) return 'ongoing_monitoring'
   if (/\b(source of wealth|sow|wealth verification|net worth|net-worth|asset statement|asset valuation|asset breakdown|property deed|financial statement|conversion rationale|conversion methodology|currency conversion|single currency)\b/.test(text)) return 'source_of_wealth'
   if (/\b(employment|employer|salary|payslip|bonus|income letter|employment contract)\b/.test(text)) return 'employment_income'
   if (/\b(company ownership|shareholding|business registry|company registration|employer registration|registry extract)\b/.test(text)) return 'company_ownership'
   if (/\b(dividend|distribution)\b/.test(text)) return 'dividend_income'
   if (/\b(address proof|residential proof|residence proof|utility bill|lease|driver.?s licence|driver.?s license)\b/.test(text)) return 'address_proof'
   if (/\b(passport|identity document|id document|national id)\b/.test(text)) return 'identity_document'
-  if (/\b(sanctions?|pep|adverse media|screening)\b/.test(text)) return 'screening'
-  if (/\b(enhanced due.?diligence|\bedd\b)\b/.test(text)) return 'enhanced_due_diligence'
   return null
 }
 
@@ -588,6 +590,9 @@ function getEvidenceDefinition(category, fallbackText = '') {
   }
   if (category === 'enhanced_due_diligence') {
     return { label: 'Enhanced Due Diligence Evidence', uploadType: 'Enhanced Due Diligence Screening' }
+  }
+  if (category === 'ongoing_monitoring') {
+    return { label: 'Ongoing Monitoring Plan', uploadType: 'Enhanced Ongoing Monitoring Plan' }
   }
   return EVIDENCE_CATEGORY_DEFINITIONS[category]
     || { label: formatAiText(fallbackText, 'Additional Supporting Evidence'), uploadType: getUploadTypeForAction(fallbackText) || 'Additional Supporting Evidence' }
@@ -633,6 +638,15 @@ function getFriendlyAiErrorMessage(error) {
   }
 
   return message || 'AI analysis failed. Check that the backend is running and try again.'
+}
+
+function escapeHtml(value) {
+  return formatAiText(value, '')
+    .replaceAll('&', '&amp;')
+    .replaceAll('<', '&lt;')
+    .replaceAll('>', '&gt;')
+    .replaceAll('"', '&quot;')
+    .replaceAll("'", '&#039;')
 }
 
 function buildNormalizedSuggestedActions(suggestions = [], caseFile) {
@@ -1136,6 +1150,8 @@ export default function CaseDetail({ onNavigate, role = 'ops' }) {
         ruleRequiredDocuments: [],
         missingRuleRequiredDocuments: [],
         ruleBlockers: [],
+        submissionBlockers: ['Select a case from the dashboard.'],
+        statusLabel: 'Draft',
         uploadedRequiredCount: 0,
         missingRequiredCount: 0,
         needsReviewCount: 0,
@@ -1297,6 +1313,8 @@ export default function CaseDetail({ onNavigate, role = 'ops' }) {
       ruleRequiredDocuments: completionSummary.ruleRequiredDocuments,
       missingRuleRequiredDocuments: completionSummary.missingRuleRequiredDocuments,
       ruleBlockers: readinessSummary?.rules?.blockers || ruleSnapshot?.aggregatedActions?.blockers || [],
+      submissionBlockers: readinessSummary?.submissionBlockers || [],
+      statusLabel: readinessSummary?.statusLabel || caseFile.status,
       uploadedRequiredCount: completionSummary.uploadedRequiredCount,
       missingRequiredCount: completionSummary.missingRequiredCount,
       needsReviewCount: completionSummary.needsReviewCount,
@@ -1324,12 +1342,8 @@ export default function CaseDetail({ onNavigate, role = 'ops' }) {
   const aiAnalysisCompleted = hasFreshAiAnalysis(caseFile)
   const hasRuleBlockers = derived.ruleBlockers.length > 0
   const canSubmit = Boolean(caseFile)
-    && hasRequiredFields(caseFile)
-    && derived.missingCategories.length === 0
-    && aiAnalysisCompleted
-    && !hasCriticalRiskFlags
+    && derived.readinessBreakdown?.canSubmit === true
     && !hasRuleBlockers
-    && derived.readinessBreakdown.risk.cleared
   const handleSubmit = async () => {
     if (!caseFile || !canSubmit) return
 
@@ -1358,6 +1372,57 @@ export default function CaseDetail({ onNavigate, role = 'ops' }) {
     setReadinessSummary(calculateReadinessScore(result.caseFile))
     setMessage('Case submitted successfully. Status updated to Submitted for Review.')
     setSubmitting(false)
+  }
+
+  const handleDownloadSowDocument = () => {
+    if (!caseFile) return
+
+    const fileStem = `${caseFile.clientName || 'client'}-source-of-wealth`
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, '-')
+      .replace(/^-|-$/g, '')
+    const generatedAt = new Date().toLocaleDateString()
+    const documentHtml = `<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>Source of Wealth - ${escapeHtml(caseFile.clientName)}</title>
+  <style>
+    body { font-family: Arial, sans-serif; color: #1f1b16; line-height: 1.55; margin: 48px; }
+    h1 { font-size: 24px; margin: 0 0 8px; }
+    h2 { font-size: 14px; letter-spacing: 2px; text-transform: uppercase; margin: 28px 0 8px; color: #6f4a3a; }
+    p { font-size: 12px; margin: 0 0 12px; }
+    .meta { color: #6f625b; font-size: 11px; margin-bottom: 24px; }
+    .box { border: 1px solid #e5ded9; padding: 16px; border-radius: 8px; margin-bottom: 16px; }
+  </style>
+</head>
+<body>
+  <h1>Source of Wealth Summary</h1>
+  <p class="meta">Client: ${escapeHtml(caseFile.clientName || 'Client')} | Case ID: ${escapeHtml(caseFile.id || '')} | Generated: ${escapeHtml(generatedAt)}</p>
+  <div class="box">
+    <h2>Primary Source of Wealth</h2>
+    <p>${escapeHtml(derived.sowDraft.primarySource)}</p>
+  </div>
+  <div class="box">
+    <h2>Supporting Evidence</h2>
+    <p>${escapeHtml(derived.sowDraft.supportingEvidence)}</p>
+  </div>
+  <div class="box">
+    <h2>Narrative Summary</h2>
+    <p>${escapeHtml(sowDraftText || derived.sowDraft.narrativeSummary)}</p>
+  </div>
+  <p class="meta">Confidence: ${escapeHtml(derived.sowDraft.confidence)} | Prepared for Compliance review.</p>
+</body>
+</html>`
+    const blob = new Blob(['\ufeff', documentHtml], { type: 'application/msword' })
+    const url = URL.createObjectURL(blob)
+    const link = document.createElement('a')
+    link.href = url
+    link.download = `${fileStem || 'source-of-wealth'}.doc`
+    document.body.appendChild(link)
+    link.click()
+    document.body.removeChild(link)
+    URL.revokeObjectURL(url)
   }
 
   const handleRerunRules = async () => {
@@ -1615,36 +1680,25 @@ export default function CaseDetail({ onNavigate, role = 'ops' }) {
               </div>
             </div>
 
-            <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
-              <div className="rounded-2xl bg-surface-container-low px-4 py-4">
-                <p className="text-xs uppercase tracking-[0.16em] text-on-surface-variant mb-2">Profile</p>
-                <p className={`text-sm font-semibold ${derived.readinessBreakdown.profile.complete ? 'text-success' : 'text-error'}`}>
-                  {derived.readinessBreakdown.profile.status}
-                </p>
-              </div>
-              <div className="rounded-2xl bg-surface-container-low px-4 py-4">
-                <p className="text-xs uppercase tracking-[0.16em] text-on-surface-variant mb-2">Documents</p>
-                <p className="text-sm font-semibold text-on-surface">
-                  {derived.readinessBreakdown.documents.completed} / {derived.readinessBreakdown.documents.total}
-                </p>
-              </div>
-              <div className="rounded-2xl bg-surface-container-low px-4 py-4">
-                <div className="flex flex-wrap items-start justify-between gap-2 mb-2">
-                  <p className="text-xs uppercase tracking-[0.16em] text-on-surface-variant">Risk Clearance</p>
-                  <span className={`inline-flex rounded-full px-2.5 py-1 text-xs font-semibold ${getRiskTone(derived.riskLevel)}`}>
-                    {derived.riskLevel} severity
-                  </span>
+            <div className="grid grid-cols-1 md:grid-cols-5 gap-3">
+              {[
+                ['Client Profile', derived.readinessBreakdown.profile?.points, 20, derived.readinessBreakdown.profile?.status],
+                ['Documents', derived.readinessBreakdown.documents?.points, 30, `${derived.readinessBreakdown.documents.completed} / ${derived.readinessBreakdown.documents.total}`],
+                ['AI Extraction', derived.readinessBreakdown.aiExtraction?.points, 15, derived.readinessBreakdown.aiExtraction?.status || 'Pending'],
+                ['Source of Wealth', derived.readinessBreakdown.sourceOfWealth?.points, 15, derived.readinessBreakdown.sourceOfWealth?.status || 'Pending'],
+                ['Risk Resolution', derived.readinessBreakdown.risk?.points, 20, derived.readinessBreakdown.risk?.status],
+              ].map(([label, points, maxPoints, status]) => (
+                <div key={label} className="rounded-2xl bg-surface-container-low px-4 py-4">
+                  <p className="text-xs uppercase tracking-[0.16em] text-on-surface-variant mb-2">{label}</p>
+                  <p className="text-sm font-semibold text-on-surface">{points ?? 0}/{maxPoints}</p>
+                  <p className="mt-1 text-xs leading-5 text-on-surface-variant">{status}</p>
                 </div>
-                <p className={`text-sm font-semibold ${derived.readinessBreakdown.risk.cleared ? 'text-success' : 'text-warning'}`}>
-                  {derived.readinessBreakdown.risk.status}
-                </p>
-                <p className="mt-2 text-xs leading-5 text-on-surface-variant">{derived.riskClearanceReason}</p>
-              </div>
+              ))}
             </div>
 
             <div className="rounded-2xl bg-surface-container-low px-4 py-4">
               <p className="text-xs uppercase tracking-[0.16em] text-on-surface-variant mb-2">Next Required Action</p>
-              <p className="text-sm leading-6 text-on-surface">{derived.nextAction}</p>
+              <p className="text-sm leading-6 text-on-surface">{derived.readinessBreakdown.nextBestAction || derived.nextAction}</p>
             </div>
 
             <div className="border-t border-outline/10 pt-5">
@@ -2184,7 +2238,20 @@ export default function CaseDetail({ onNavigate, role = 'ops' }) {
     const aiHasRun = Boolean(analysisSnapshot || caseFile?.aiAnalysis)
 
     return (
-      <SectionCard title="SoW Draft" description="Review and refine the source of wealth summary." icon={PencilLine}>
+      <SectionCard
+        title="SoW Draft"
+        description="Review and refine the source of wealth summary."
+        icon={PencilLine}
+        action={aiHasRun ? (
+          <button
+            onClick={handleDownloadSowDocument}
+            className="inline-flex items-center gap-2 rounded-xl border border-primary/20 bg-primary/10 px-3 py-2 text-xs font-semibold text-primary hover:bg-primary/15"
+          >
+            <Download className="w-4 h-4" />
+            Download SoW Document
+          </button>
+        ) : null}
+      >
         {!aiHasRun ? (
           <div className="rounded-2xl border border-outline/10 bg-surface p-6">
             <p className="text-sm font-semibold text-on-surface">No SoW draft yet.</p>
@@ -2194,13 +2261,13 @@ export default function CaseDetail({ onNavigate, role = 'ops' }) {
           </div>
         ) : (
           <div className="space-y-4">
-            <div className="rounded-2xl border border-outline/10 bg-surface p-4">
+            <div className="rounded-2xl border border-outline/10 bg-surface p-5">
               <p className="text-xs uppercase tracking-[0.16em] text-on-surface-variant mb-2">Primary Source of Wealth</p>
-              <p className="text-sm leading-6 text-on-surface">{derived.sowDraft.primarySource}</p>
+              <p className="text-base font-medium leading-7 text-on-surface">{derived.sowDraft.primarySource}</p>
             </div>
-            <div className="rounded-2xl border border-outline/10 bg-surface p-4">
+            <div className="rounded-2xl border border-outline/10 bg-surface p-5">
               <p className="text-xs uppercase tracking-[0.16em] text-on-surface-variant mb-2">Supporting Evidence</p>
-              <p className="text-sm leading-6 text-on-surface">{derived.sowDraft.supportingEvidence}</p>
+              <p className="text-sm leading-7 text-on-surface">{derived.sowDraft.supportingEvidence}</p>
             </div>
             <div className="rounded-2xl border border-outline/10 bg-surface p-4">
               <div className="flex items-center justify-between gap-3 mb-3">
@@ -2365,6 +2432,24 @@ export default function CaseDetail({ onNavigate, role = 'ops' }) {
         suggestedActionId: action.suggestedActionId,
         evidenceCategory: action.evidenceCategory,
       })),
+      ...(derived.readinessBreakdown.risk?.issues || [])
+        .filter((issue) => !/critical|high/i.test(String(issue.severity || '')))
+        .map((issue) => ({
+          title: issue.title || 'Minor risk observation',
+          severity: issue.severity || 'Low',
+          description: issue.description || 'A low-priority risk observation is still open.',
+          action: 'Review or upload supporting evidence if needed.',
+          uploadType: issue.evidenceCategory ? getEvidenceDefinition(issue.evidenceCategory, issue.title).uploadType : null,
+          evidenceCategory: issue.evidenceCategory,
+        })),
+      ...derived.submissionBlockers
+        .filter((reason) => !derived.missingRequiredDocuments.some((item) => reason.includes(item.label)))
+        .map((reason) => ({
+          title: 'Readiness blocker',
+          severity: /critical|high|below USD/i.test(reason) ? 'High' : 'Medium',
+          description: reason,
+          action: 'Resolve this item before submission.',
+        })),
     ]
 
     return (
@@ -2523,7 +2608,7 @@ export default function CaseDetail({ onNavigate, role = 'ops' }) {
               <div className="rounded-2xl border border-outline/10 bg-surface px-4 py-2.5 min-w-[120px]">
                 <p className="text-[11px] uppercase tracking-[0.18em] text-on-surface-variant mb-2">Status</p>
                 <span className={`inline-flex items-center rounded-full px-3 py-1 text-sm font-semibold ${getStatusBadge(caseFile.status)}`}>
-                  {caseFile.status}
+                  {derived.statusLabel || caseFile.status}
                 </span>
                 <p className="mt-2 text-[11px] leading-4 text-on-surface-variant">
                   Owner: <span className="font-semibold text-on-surface">{getStatusOwner(caseFile)}</span>
@@ -2532,6 +2617,7 @@ export default function CaseDetail({ onNavigate, role = 'ops' }) {
               <button
                 onClick={handleSubmit}
                 disabled={!canSubmit || submitting}
+                title={!canSubmit ? (derived.submissionBlockers[0] || 'Complete readiness checks before submission.') : 'Submit for Compliance Review'}
                 className="inline-flex items-center gap-2 rounded-2xl bg-primary px-4 py-2 text-sm font-semibold text-white hover:bg-primary/90 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
               >
                 {submitting ? <Loader2 className="w-4 h-4 animate-spin" /> : <Send className="w-4 h-4" />}
@@ -2570,13 +2656,6 @@ export default function CaseDetail({ onNavigate, role = 'ops' }) {
           {message ? (
             <div className="mt-4 rounded-2xl border border-outline/10 bg-surface px-4 py-3 text-sm text-on-surface-variant">
               {message}
-            </div>
-          ) : null}
-          {!canSubmit ? (
-            <div className="mt-3 rounded-2xl border border-outline/10 bg-surface px-4 py-3 text-xs text-on-surface-variant">
-              {hasRuleBlockers
-                ? 'Submit disabled because a compliance rule created a submission blocker. Upload all rule-required documents and re-run rules.'
-                : 'Submit disabled until profile is valid, all required document categories are complete, AI analysis has run after the latest upload, and no high/critical risk flags remain.'}
             </div>
           ) : null}
 

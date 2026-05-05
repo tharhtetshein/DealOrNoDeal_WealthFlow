@@ -231,6 +231,22 @@ export default function RMDashboard({ onNavigate }) {
     ]
   }, [cases])
 
+  const hasStatusFilter = activeStatus !== 'All'
+  const hasSearchFilter = searchQuery.trim().length > 0
+  const emptyStateTitle = hasStatusFilter
+    ? `No cases with status "${activeStatus}".`
+    : hasSearchFilter
+      ? 'No cases match your search.'
+      : 'No onboarding cases yet. Create a new case to begin.'
+  const emptyStateDescription = hasStatusFilter
+    ? hasSearchFilter
+      ? `No ${activeStatus} cases match "${searchQuery.trim()}".`
+      : `There are no onboarding cases currently marked as ${activeStatus}.`
+    : hasSearchFilter
+      ? `No cases match "${searchQuery.trim()}". Try a different client name or case ID.`
+      : 'Start a new client onboarding workflow from this dashboard.'
+  const showCreateEmptyAction = !hasStatusFilter && !hasSearchFilter
+
   return (
     <div className="min-h-screen bg-surface p-8 pb-10">
       <div className="max-w-7xl mx-auto space-y-6">
@@ -311,17 +327,19 @@ export default function RMDashboard({ onNavigate }) {
               <div className="mx-auto mb-4 flex h-16 w-16 items-center justify-center rounded-3xl bg-surface">
                 <FolderOpen className="w-8 h-8 text-on-surface-variant" />
               </div>
-              <h3 className="font-display text-xl font-bold text-on-surface mb-2">No onboarding cases yet. Create a new case to begin.</h3>
-              <p className="text-sm text-on-surface-variant mb-6">
-                {searchQuery ? `No cases match "${searchQuery}". Try a different search or filter.` : 'Start a new client onboarding workflow from this dashboard.'}
+              <h3 className="font-display text-xl font-bold text-on-surface mb-2">{emptyStateTitle}</h3>
+              <p className={`text-sm text-on-surface-variant ${showCreateEmptyAction ? 'mb-6' : ''}`}>
+                {emptyStateDescription}
               </p>
-              <button
-                onClick={handleCreateNewCase}
-                className="inline-flex items-center gap-2 rounded-2xl bg-primary px-5 py-3 text-sm font-semibold text-white hover:bg-primary/90 transition-colors"
-              >
-                <Plus className="w-4 h-4" />
-                Create New Case
-              </button>
+              {showCreateEmptyAction ? (
+                <button
+                  onClick={handleCreateNewCase}
+                  className="inline-flex items-center gap-2 rounded-2xl bg-primary px-5 py-3 text-sm font-semibold text-white hover:bg-primary/90 transition-colors"
+                >
+                  <Plus className="w-4 h-4" />
+                  Create New Case
+                </button>
+              ) : null}
             </div>
           ) : (
             <div className="px-6 py-5 space-y-4">
