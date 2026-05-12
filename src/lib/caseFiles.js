@@ -681,7 +681,7 @@ function getEffectiveReadinessPenalty(caseFile, snapshot) {
     const isNoDocumentPenalty = ruleId === 'rule-missing-docs-penalty'
       || reason.includes('no documents uploaded')
 
-    if (isNoDocumentPenalty && currentDocumentCount > 0) {
+    if (isNoDocumentPenalty) {
       return total
     }
 
@@ -897,10 +897,8 @@ export function calculateReadinessScore(caseFile) {
       .map((issue) => `Unresolved ${String(issue.severity).toLowerCase()} risk: ${issue.title}`),
   ].filter(Boolean)
   const canSubmit = RM_SUBMITTABLE_STATUSES.has(normalized.status)
-    && percentage >= 80
+    && percentage >= 90
     && allMandatoryDocumentsUploaded
-    && components.aiExtraction.complete
-    && components.sow.complete
     && !components.risk.hasCritical
     && !components.risk.hasHigh
     && components.profile.usdEquivalent >= NET_WORTH_MINIMUM_USD
@@ -910,11 +908,9 @@ export function calculateReadinessScore(caseFile) {
       ? 'Blocked by Risk'
       : !allMandatoryDocumentsUploaded
         ? 'Missing Documents'
-        : !components.aiExtraction.complete || !components.sow.complete
-          ? 'Needs RM Review'
-          : canSubmit
+        : canSubmit
             ? 'Ready for Compliance'
-            : 'Draft'
+            : 'Needs RM Review'
   const nextBestAction = getRmSubmissionStatusBlocker(normalized.status)
     || readinessGaps[0]
     || (canSubmit ? 'Submit for compliance review.' : 'Review case readiness.')
@@ -1604,9 +1600,9 @@ export async function submitCaseForCompliance(caseId, payload = {}) {
         ...existing,
         ...payload,
       })
-
-      if (!hasFreshAiAnalysis(merged)) {
-        return { ok: false, reason: 'Run AI analysis after the latest document upload before compliance submission.' }
+      const readiness = calculateReadinessScore(merged)
+      if ((readiness?.percentage || 0) < 90) {
+        return { ok: false, reason: 'Readiness score must be at least 90% before compliance submission.' }
       }
 
       if (hasCriticalIssues(merged)) {
@@ -1665,9 +1661,9 @@ export async function submitCaseForCompliance(caseId, payload = {}) {
         ...existing,
         ...payload,
       }
-
-      if (!hasFreshAiAnalysis(merged)) {
-        return { ok: false, reason: 'Run AI analysis after the latest document upload before compliance submission.' }
+      const readiness = calculateReadinessScore(merged)
+      if ((readiness?.percentage || 0) < 90) {
+        return { ok: false, reason: 'Readiness score must be at least 90% before compliance submission.' }
       }
 
       if (hasCriticalIssues(merged)) {
@@ -1902,6 +1898,11 @@ export async function submitComplianceDecision(caseId, decision, payload = {}) {
       reason: 'Compliance rejected case',
       note: payload.note || 'Compliance rejected the case.',
     },
+    escalate: {
+      status: CASE_STATUS.ESCALATED,
+      reason: 'Compliance escalated case',
+      note: payload.note || 'Compliance escalated the case to Senior Compliance.',
+    },
   }[normalizedDecision]
 
   if (!decisionConfig) return { ok: false, reason: 'Unknown compliance decision' }
@@ -1909,7 +1910,7 @@ export async function submitComplianceDecision(caseId, decision, payload = {}) {
   const makeDecisionComment = () => ({
     id: `decision-${Date.now()}`,
     author: 'Compliance Officer',
-    audience: normalizedDecision === 'request_info' ? 'RM Feedback' : 'Internal',
+    audience: normalizedDecision === 'request_info' ? 'RM Feedback' : normalizedDecision === 'escalate' ? 'Escalation Note' : 'Internal',
     text: decisionConfig.note,
     decision: normalizedDecision,
     createdAt: new Date().toISOString(),

@@ -101,13 +101,13 @@ export async function detectRisks(clientData, documents) {
   return response.json()
 }
 
-export async function checkMissingDocs(uploadedDocs) {
+export async function checkMissingDocs(documents, clientData = {}) {
   const response = await fetch(`${API_BASE_URL}/check-missing-docs`, {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json'
     },
-    body: JSON.stringify({ uploadedDocs })
+    body: JSON.stringify({ clientData, documents, uploadedDocs: documents })
   })
 
   if (!response.ok) {

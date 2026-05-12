@@ -27,7 +27,7 @@ export default function RiskFlags({ onNext, onBack, clientData, documents }) {
     setIsLoading(true)
     try {
       const [missingResult, riskResult] = await Promise.all([
-        checkMissingDocs(documents),
+        checkMissingDocs(documents, clientData),
         detectRisks(clientData, documents)
       ])
       setMissingDocs(missingResult.missingDocs)

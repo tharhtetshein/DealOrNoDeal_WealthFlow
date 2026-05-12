@@ -34,17 +34,34 @@ You will receive:
 Your tasks are:
 1. Extract key information from documents
 2. Validate extracted data against the client profile
-3. Assess document completeness for KYC and Source of Wealth verification
+3. Assess uploaded document quality for KYC and Source of Wealth verification
 4. Generate a professional Source of Wealth draft
 5. Identify and classify risk factors
 6. Suggest clear next actions
 
 Important rules:
 - Do NOT make assumptions without evidence
+- Do NOT invent facts, names, dates, countries, income, companies, assets, document contents, or risk issues
+- Do NOT assume a document is missing if it appears in the uploaded document list
+- Do NOT ask for the same evidence again using different wording
+- Do NOT ask for a similar document if an uploaded document already satisfies that evidence category
+- Only request a document if it is truly missing, expired, invalid, unreadable, contradictory, or insufficient
+- If uploaded text is short because of system truncation, do NOT treat that as the client uploading an incomplete document
+- If a field is not supported by evidence, return null instead of guessing
+- Every mismatch, risk flag, and suggested action must be linked to a specific source document or profile field
+- If there is no evidence for a risk, do not include it
 - Clearly indicate uncertainty when evidence is weak
 - Do NOT approve or reject cases
 - Support human decision-making only
 - Keep outputs clear, structured, and easy to scan
+
+Document request rules:
+- Use uploadedDocumentCategories and missingRequiredCategories as the source of truth
+- suggestedActions may only request documents from missingRequiredCategories
+- If missingRequiredCategories is empty, do not request more documents
+- If a required category is already uploaded, do not ask for it again
+- For uploaded but weak documents, explain the weakness clearly instead of asking for a duplicate document
+- Do not generate multiple actions that mean the same thing
 
 Output rules:
 - Return ONLY one valid JSON object
@@ -91,6 +108,82 @@ function buildClientProfileSummary(clientData = {}) {
 - Estimated net worth: ${clientData.estimatedWealth || clientData.netWorth || 'Not provided'}
 - Declared source of wealth: ${clientData.primarySource || clientData.declaredSourceOfWealth || 'Not provided'}
 - Account purpose: ${clientData.purpose || clientData.accountPurpose || 'Not provided'}`
+}
+
+const BASE_REQUIRED_DOCS = [
+  'Passport',
+  'Address Proof',
+  'Tax Residency',
+  'SoW Declaration',
+  'Bank Statements'
+]
+
+const OCCUPATION_REQUIRED_DOCS = {
+  'Business Owner': [
+    'Business Registry Extract',
+    'Shareholding Structure',
+    'Company Financial Statements',
+    'Dividend Statements'
+  ],
+  'Salaried Employee': [
+    'Payslips',
+    'Employment Contract'
+  ],
+  'Investor': [
+    'Investment Portfolio Statements',
+    'Trade Confirmations'
+  ]
+}
+
+function normalizeCategory(value = '') {
+  return String(value)
+    .toLowerCase()
+    .replace(/[^a-z0-9]/g, '')
+}
+
+function getRequiredDocumentCategories(clientData = {}) {
+  const occupation = clientData.occupation || ''
+  const occupationDocs = OCCUPATION_REQUIRED_DOCS[occupation] || []
+
+  return [
+    ...BASE_REQUIRED_DOCS,
+    ...occupationDocs
+  ]
+}
+
+function getUploadedDocumentCategories(documents = []) {
+  return [...new Set(
+    documents
+      .map(doc => doc.category)
+      .filter(Boolean)
+  )]
+}
+
+function getMissingRequiredCategories(clientData = {}, documents = []) {
+  const required = getRequiredDocumentCategories(clientData)
+  const uploaded = getUploadedDocumentCategories(documents)
+
+  const uploadedNormalized = new Set(uploaded.map(normalizeCategory))
+
+  return required.filter(requiredCategory => {
+    return !uploadedNormalized.has(normalizeCategory(requiredCategory))
+  })
+}
+
+function buildUploadedCategorySummary(documents = [], missingRequiredCategories = []) {
+  const uploadedCategories = getUploadedDocumentCategories(documents)
+
+  return `DOCUMENT COVERAGE SUMMARY
+Uploaded document categories:
+${uploadedCategories.length ? uploadedCategories.map(c => `- ${c}`).join('\n') : '- None'}
+
+Missing required categories:
+${missingRequiredCategories.length ? missingRequiredCategories.map(c => `- ${c}`).join('\n') : '- None'}
+
+Rules:
+- Only request documents listed under Missing required categories.
+- Do not request documents listed under Uploaded document categories.
+- Do not request duplicate or similar evidence using different wording.`
 }
 
 function buildDocumentsSummary(documents = []) {
@@ -188,10 +281,12 @@ function sendGroqError(res, error, fallbackMessage) {
   })
 }
 
-function buildAnalysisPrompt(clientData = {}, documents = []) {
+function buildAnalysisPrompt(clientData = {}, documents = [], missingRequiredCategories = []) {
   return `Analyze the following onboarding case using KYC and AML principles.
 
 ${buildClientProfileSummary(clientData)}
+
+${buildUploadedCategorySummary(documents, missingRequiredCategories)}
 
 ${buildDocumentsSummary(documents)}
 
@@ -228,6 +323,15 @@ Formatting requirements:
 - sourceOfWealthDraft must include primarySourceOfWealth, supportingEvidence, narrativeExplanation, confidence
 - riskFlags should include title, severity, description, rationale
 - suggestedActions should be a concise array of actionable recommendations
+- Include uploadedDocumentCategories and missingRequiredCategories if useful for traceability, but do not override the values provided in DOCUMENT COVERAGE SUMMARY
+- Each mismatch, risk flag, missing/insufficient item, and suggested action must reference a sourceDocument or profile field when applicable
+- Do not invent risk flags. If no provided profile field or document text supports the risk, omit it
+
+STRICT DOCUMENT REQUEST RULE:
+- missingOrInsufficientDocuments must only include categories from Missing required categories, unless an uploaded document is clearly invalid, expired, unreadable, contradictory, or insufficient.
+- suggestedActions must only ask for missingRequiredCategories.
+- If a required category is already uploaded, do not ask for it again.
+- If two suggestions mean the same thing, merge them into one.
 - Do not create suggestedActions asking for documents that are already listed in UPLOADED DOCUMENTS unless the uploaded text explicitly shows the document is invalid, expired, wrong, or insufficient
 - Do not ask for a completed/full document merely because the provided excerpt is short or truncated
 - Only cite values that are supported by the provided text
@@ -236,6 +340,90 @@ Formatting requirements:
 - Do not approve or reject the case
 
 Return ONLY one valid JSON object. Do not include markdown, comments, trailing commas, or text outside the JSON object.`
+}
+
+function dedupeActions(actions = []) {
+  const seen = new Set()
+
+  return actions.filter(action => {
+    const text = typeof action === 'string'
+      ? action
+      : action?.action || action?.title || JSON.stringify(action)
+
+    const normalized = text
+      .toLowerCase()
+      .replace(/singapore|iras|certificate|documentation|document|proof|letter/g, '')
+      .replace(/[^a-z0-9]/g, '')
+
+    if (seen.has(normalized)) return false
+    seen.add(normalized)
+    return true
+  })
+}
+
+function removeUploadedDocumentRequests(sowData = {}, uploadedCategories = [], missingRequiredCategories = []) {
+  const uploadedSet = new Set(uploadedCategories.map(normalizeCategory))
+  const missingSet = new Set(missingRequiredCategories.map(normalizeCategory))
+  const insufficiencyWords = [
+    'weak',
+    'invalid',
+    'expired',
+    'unreadable',
+    'contradictory',
+    'contradiction',
+    'insufficient',
+    'mismatch',
+    'doesnotmatch',
+    'notreadable',
+    'noextractabletext',
+  ]
+
+  const isAllowedRequest = (item, { allowUploadedInsufficiency = false } = {}) => {
+    const text = typeof item === 'string'
+      ? item
+      : JSON.stringify(item)
+
+    const normalizedText = normalizeCategory(text)
+
+    for (const missing of missingSet) {
+      if (normalizedText.includes(missing)) return true
+    }
+
+    for (const uploaded of uploadedSet) {
+      if (!normalizedText.includes(uploaded)) continue
+      if (allowUploadedInsufficiency && insufficiencyWords.some(word => normalizedText.includes(word))) {
+        return true
+      }
+      return false
+    }
+
+    const documentWords = [
+      'upload',
+      'provide',
+      'obtain',
+      'submit',
+      'document',
+      'statement',
+      'certificate',
+      'proof',
+      'letter'
+    ]
+
+    const looksLikeDocRequest = documentWords.some(word =>
+      normalizedText.includes(normalizeCategory(word))
+    )
+
+    return !looksLikeDocRequest
+  }
+
+  return {
+    ...sowData,
+    suggestedActions: dedupeActions(
+      (sowData.suggestedActions || []).filter(item => isAllowedRequest(item))
+    ),
+    missingOrInsufficientDocuments: (sowData.missingOrInsufficientDocuments || [])
+      .filter(item => isAllowedRequest(item, { allowUploadedInsufficiency: true }))
+  }
 }
 
 // Create uploads directory if it doesn't exist
@@ -293,7 +481,8 @@ app.post('/api/analyze-documents', upload.array('documents'), async (req, res) =
       fs.unlinkSync(file.path)
     }
 
-    const prompt = buildAnalysisPrompt(clientData, documentTexts)
+    const missingRequiredCategories = getMissingRequiredCategories(clientData, documentTexts)
+    const prompt = buildAnalysisPrompt(clientData, documentTexts, missingRequiredCategories)
 
     const completion = await createGroqCompletion({
       messages: [
@@ -307,19 +496,29 @@ app.post('/api/analyze-documents', upload.array('documents'), async (req, res) =
         }
       ],
       model: "openai/gpt-oss-120b",
-      temperature: 0.3,
+      temperature: 0,
       max_tokens: 2500,
       top_p: 1,
       response_format: { type: 'json_object' },
       stream: false
     })
 
-    const sowData = parseJsonResponse(completion.choices[0].message.content)
+    const uploadedCategories = getUploadedDocumentCategories(documentTexts)
+    const requiredCategories = getRequiredDocumentCategories(clientData)
+    let sowData = parseJsonResponse(completion.choices[0].message.content)
+    sowData = removeUploadedDocumentRequests(
+      sowData,
+      uploadedCategories,
+      missingRequiredCategories
+    )
 
     res.json({
       success: true,
       sowData: sowData,
-      documentsProcessed: documentTexts.length
+      documentsProcessed: documentTexts.length,
+      requiredCategories,
+      uploadedCategories,
+      missingRequiredCategories,
     })
 
   } catch (error) {
@@ -370,7 +569,12 @@ app.post('/api/analyze-case-documents', async (req, res) => {
       return res.status(400).json({ error: 'No document data provided' })
     }
 
-    const prompt = buildAnalysisPrompt(clientData, documents)
+    const missingRequiredCategories = getMissingRequiredCategories(clientData, documents)
+    const prompt = buildAnalysisPrompt(
+      clientData,
+      documents,
+      missingRequiredCategories
+    )
 
     const completion = await createGroqCompletion({
       messages: [
@@ -384,19 +588,29 @@ app.post('/api/analyze-case-documents', async (req, res) => {
         },
       ],
       model: 'openai/gpt-oss-120b',
-      temperature: 0.2,
+      temperature: 0,
       max_tokens: 3000,
       top_p: 1,
       response_format: { type: 'json_object' },
       stream: false,
     })
 
-    const sowData = parseJsonResponse(completion.choices[0].message.content)
+    const uploadedCategories = getUploadedDocumentCategories(documents)
+    const requiredCategories = getRequiredDocumentCategories(clientData)
+    let sowData = parseJsonResponse(completion.choices[0].message.content)
+    sowData = removeUploadedDocumentRequests(
+      sowData,
+      uploadedCategories,
+      missingRequiredCategories
+    )
 
     res.json({
       success: true,
       sowData,
       documentsProcessed: documents.length,
+      requiredCategories,
+      uploadedCategories,
+      missingRequiredCategories,
     })
   } catch (error) {
     console.error('Error analyzing stored case documents:', error)
@@ -456,7 +670,7 @@ Only identify risks supported by the provided profile or document content. If ev
         }
       ],
       model: "openai/gpt-oss-120b",
-      temperature: 0.2,
+      temperature: 0,
       max_tokens: 2000,
       top_p: 1,
       response_format: { type: 'json_object' },
@@ -482,32 +696,30 @@ Only identify risks supported by the provided profile or document content. If ev
 // API endpoint for missing documents check
 app.post('/api/check-missing-docs', (req, res) => {
   try {
-    const { uploadedDocs } = req.body
-    
-    const requiredDocs = [
-      { id: 'passport', name: 'Passport / ID Document', required: true },
-      { id: 'payslip', name: 'Recent Payslips (3 months)', required: true },
-      { id: 'tax_return', name: 'Tax Returns (2 years)', required: true },
-      { id: 'bank_statement', name: 'Bank Statements (6 months)', required: true },
-      { id: 'business_docs', name: 'Business Registration / Ownership', required: false },
-      { id: 'investment_portfolio', name: 'Investment Portfolio Statement', required: false },
-      { id: 'property_docs', name: 'Property Ownership Documents', required: false },
-      { id: 'inheritance_docs', name: 'Inheritance / Gift Documents', required: false },
-      { id: 'reference_letter', name: 'Bank Reference Letter', required: true },
-      { id: 'cv_resume', name: 'CV / Resume', required: true },
-    ]
+    const { clientData = {}, documents: requestDocuments, uploadedDocs } = req.body || {}
+    const documents = Array.isArray(requestDocuments)
+      ? requestDocuments
+      : Array.isArray(uploadedDocs)
+        ? uploadedDocs
+        : []
 
-    const uploadedDocIds = uploadedDocs ? Object.keys(uploadedDocs) : []
-    const missingDocs = requiredDocs
-      .filter(doc => !uploadedDocIds.includes(doc.id))
-      .map(doc => ({
-        ...doc,
-        reason: 'Required for KYC and Source of Wealth verification'
-      }))
+    const requiredCategories = getRequiredDocumentCategories(clientData)
+    const uploadedCategories = getUploadedDocumentCategories(documents)
+    const missingRequiredCategories = getMissingRequiredCategories(clientData, documents)
+    const missingDocs = missingRequiredCategories.map(category => ({
+      id: normalizeCategory(category),
+      name: category,
+      required: true,
+      reason: 'Required for KYC and Source of Wealth verification'
+    }))
 
     res.json({
       success: true,
-      missingDocs: missingDocs
+      requiredCategories,
+      uploadedCategories,
+      missingRequiredCategories,
+      missingDocs,
+      complete: missingRequiredCategories.length === 0
     })
 
   } catch (error) {

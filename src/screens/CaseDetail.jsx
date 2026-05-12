@@ -28,10 +28,10 @@ import {
   getDocumentCompletionSummary,
   getDocumentTypeGroups,
   getActiveCaseId,
+  getAllLocalCaseFiles,
   getCaseFileById,
   getClientProfileType,
   calculateReadinessScore,
-  getReadinessScore,
   hasFreshAiAnalysis,
   hasRequiredDocuments,
   hasRequiredFields,
@@ -708,6 +708,60 @@ function buildNormalizedSuggestedActions(suggestions = [], caseFile) {
   })
 }
 
+function isBenignSingleJurisdictionAction(action) {
+  const text = `${action?.title || ''} ${action?.text || ''} ${action?.detail || ''}`.toLowerCase()
+  return text.includes('single jurisdiction exposure')
+    && /\ball identified activities, assets, and income are singapore-based\b/i.test(text)
+}
+
+function isProfileUpdateAction(action) {
+  const text = `${action?.title || ''} ${action?.text || ''} ${action?.detail || ''} ${action?.evidenceLabel || ''}`.toLowerCase()
+  return text.includes('not supplied in profile')
+    || text.includes('complete this profile field')
+    || text.includes('employerorbusiness')
+}
+
+function buildResolvedUploadedSuggestionActions(caseFile) {
+  const documents = (caseFile?.documents || []).filter((document) => (
+    document.uploadedForSuggestion
+    && (document.suggestedActionText || document.suggestedActionId || document.evidenceCategory)
+  ))
+  const grouped = new Map()
+
+  documents.forEach((document, index) => {
+    const text = formatAiText(document.suggestedActionText, 'Uploaded supporting evidence')
+    const evidenceCategory = document.evidenceCategory
+      || getEvidenceCategoryForText(`${document.category} ${document.name} ${text}`)
+      || `uploaded_suggestion_${index}`
+    const existing = grouped.get(evidenceCategory) || {
+      text,
+      priority: getActionPriority(text),
+      evidenceCategory,
+      coveredDocuments: [],
+      relatedSuggestions: [],
+    }
+
+    existing.coveredDocuments.push(document)
+    if (text && !existing.relatedSuggestions.includes(text)) {
+      existing.relatedSuggestions.push(text)
+    }
+    grouped.set(evidenceCategory, existing)
+  })
+
+  return Array.from(grouped.values()).map((action) => {
+    const definition = getEvidenceDefinition(action.evidenceCategory, action.text)
+    return {
+      ...action,
+      title: definition.label || action.text,
+      uploadType: definition.uploadType || getUploadTypeForAction(action.text),
+      suggestedActionId: `resolved_${action.evidenceCategory}`,
+      uploadedCount: action.coveredDocuments.length,
+      evidenceLabel: 'Covered by uploaded evidence',
+      resolvedUpload: true,
+    }
+  })
+}
+
 function buildSuggestedActionId(actionText, index = 0, prefix = 'suggestion') {
   const source = formatAiText(actionText, '').trim().toLowerCase()
   let hash = 0
@@ -1077,8 +1131,12 @@ export default function CaseDetail({ onNavigate, role = 'ops' }) {
 
   const refreshCase = async () => {
     const caseId = getActiveCaseId()
-    const activeCase = caseId ? await getCaseFileById(caseId) : null
-    const nextReadinessSummary = activeCase?.id ? await getReadinessScore(activeCase.id) : null
+    const storedCase = caseId ? await getCaseFileById(caseId) : null
+    const localCase = caseId && !storedCase
+      ? getAllLocalCaseFiles().find((item) => item.id === caseId) || null
+      : null
+    const activeCase = storedCase || localCase
+    const nextReadinessSummary = activeCase?.id ? calculateReadinessScore(activeCase) : null
     setCaseFile(activeCase)
     setReadinessSummary(nextReadinessSummary)
     setLoading(false)
@@ -1192,9 +1250,13 @@ export default function CaseDetail({ onNavigate, role = 'ops' }) {
     const completionSummary = getDocumentCompletionSummary(caseFile)
     const ruleSnapshot = caseFile._lastRuleSnapshot || caseFile.ruleSnapshots?.[caseFile.ruleSnapshots.length - 1] || null
     const profileType = getClientProfileType(caseFile)
-    const completedCategories = readinessSummary?.documents?.completed ?? completionSummary.requiredCompletedCount
+    const fallbackReadinessSummary = calculateReadinessScore(caseFile)
+    const activeReadinessSummary = readinessSummary && ((readinessSummary.percentage || 0) > 0 || (fallbackReadinessSummary?.percentage || 0) === 0)
+      ? readinessSummary
+      : fallbackReadinessSummary
+    const completedCategories = activeReadinessSummary?.documents?.completed ?? completionSummary.requiredCompletedCount
     const missingCategories = completionSummary.missingCategoryLabels
-    const readiness = readinessSummary?.percentage ?? 0
+    const readiness = activeReadinessSummary?.percentage ?? 0
     const baseReadiness = readiness
 
     const extraction = buildMockExtraction(caseFile)
@@ -1264,7 +1326,7 @@ export default function CaseDetail({ onNavigate, role = 'ops' }) {
       || openMismatches.some((mismatch) => String(mismatch.severity || '').toLowerCase() === 'high')
     const hasHighPriorityFollowUp = openNormalizedActions.some((action) => action.priority === 'High' && action.uploadedCount === 0)
       || openHighMissingEvidence
-    const riskLevel = readinessSummary?.rules?.riskLevel || ruleSnapshot?.computedMetrics?.finalRiskLevel || deriveRiskLevel({
+    const liveRiskLevel = deriveRiskLevel({
       missingCategories,
       mismatches: openMismatches,
       riskFlags: hasHighPriorityFollowUp
@@ -1272,6 +1334,15 @@ export default function CaseDetail({ onNavigate, role = 'ops' }) {
         : normalizedAnalysisData.risks,
       readiness,
     })
+    const liveRiskCleared = readiness >= 100
+      && missingCategories.length === 0
+      && openMismatches.length === 0
+      && !hasHighSeverityIssue
+      && !hasHighPriorityFollowUp
+      && openNormalizedActions.every((action) => action.uploadedCount > 0 || action.priority !== 'High')
+    const riskLevel = liveRiskCleared
+      ? 'Low'
+      : activeReadinessSummary?.rules?.riskLevel || ruleSnapshot?.computedMetrics?.finalRiskLevel || liveRiskLevel
     let nextAction = 'Review case details and proceed with the next workflow step.'
     if (missingCategories.length > 0) nextAction = 'Resolve missing documents before compliance handoff.'
     else if (hasHighSeverityIssue || hasHighPriorityFollowUp || openMismatches.length > 0) nextAction = 'Resolve high-priority AI findings before submission.'
@@ -1294,7 +1365,7 @@ export default function CaseDetail({ onNavigate, role = 'ops' }) {
 
     return {
       readiness,
-      readinessBreakdown: readinessSummary || {
+      readinessBreakdown: activeReadinessSummary || {
         profile: {
           complete: hasRequiredFields(caseFile),
           status: hasRequiredFields(caseFile) ? 'Complete' : 'Incomplete',
@@ -1313,7 +1384,7 @@ export default function CaseDetail({ onNavigate, role = 'ops' }) {
       },
       nextAction,
       completedCategories,
-      totalCategories: readinessSummary?.documents?.total ?? completionSummary.requiredTotal,
+      totalCategories: activeReadinessSummary?.documents?.total ?? completionSummary.requiredTotal,
       missingCategories,
       checklistEntries: completionSummary.entries,
       requiredDocuments: completionSummary.requiredDocuments,
@@ -1323,10 +1394,10 @@ export default function CaseDetail({ onNavigate, role = 'ops' }) {
       needsReviewDocuments: completionSummary.needsReviewDocuments,
       ruleRequiredDocuments: completionSummary.ruleRequiredDocuments,
       missingRuleRequiredDocuments: completionSummary.missingRuleRequiredDocuments,
-      ruleBlockers: readinessSummary?.rules?.blockers || ruleSnapshot?.aggregatedActions?.blockers || [],
+      ruleBlockers: activeReadinessSummary?.rules?.blockers || ruleSnapshot?.aggregatedActions?.blockers || [],
       submissionBlockers: [],
-      readinessGaps: readinessSummary?.readinessGaps || [],
-      statusLabel: readinessSummary?.statusLabel || caseFile.status,
+      readinessGaps: activeReadinessSummary?.readinessGaps || [],
+      statusLabel: activeReadinessSummary?.statusLabel || caseFile.status,
       uploadedRequiredCount: completionSummary.uploadedRequiredCount,
       missingRequiredCount: completionSummary.missingRequiredCount,
       needsReviewCount: completionSummary.needsReviewCount,
@@ -1356,8 +1427,28 @@ export default function CaseDetail({ onNavigate, role = 'ops' }) {
   const canSubmit = Boolean(caseFile)
     && derived.readinessBreakdown?.canSubmit === true
     && !hasRuleBlockers
+  const submitIssues = Array.from(new Set([
+    !caseFile ? 'No case is selected.' : '',
+    caseFile?.status === CASE_STATUS.PENDING_REVIEW || caseFile?.status === CASE_STATUS.UNDER_REVIEW
+      ? 'Case is already in Compliance review. RM can resubmit only if Compliance requests more information.'
+      : '',
+    caseFile?.status === CASE_STATUS.APPROVED ? 'Approved cases cannot be resubmitted.' : '',
+    caseFile?.status === CASE_STATUS.REJECTED ? 'Rejected cases cannot be resubmitted.' : '',
+    caseFile?.status === CASE_STATUS.ESCALATED ? 'Escalated cases must be resolved by Compliance before resubmission.' : '',
+    hasRuleBlockers ? 'Rule review holds are still open.' : '',
+    derived.readiness < 90 ? 'Readiness score must be at least 90%.' : '',
+    derived.missingRequiredDocuments.length > 0 ? `Missing required documents: ${derived.missingRequiredDocuments.map((item) => item.label).join(', ')}.` : '',
+    derived.needsReviewDocuments.length > 0 ? `Documents need review: ${derived.needsReviewDocuments.map((item) => item.label).join(', ')}.` : '',
+    derived.readinessBreakdown?.profile?.eligibilityWarning || '',
+    derived.readinessBreakdown?.risk?.hasHighOrCriticalRisk ? 'High or critical risk items remain unresolved.' : '',
+  ].filter(Boolean)))
+
   const handleSubmit = async () => {
-    if (!caseFile || !canSubmit) return
+    if (!caseFile) return
+    if (!canSubmit) {
+      setMessage(`Cannot submit yet: ${submitIssues.length > 0 ? submitIssues.join(' ') : 'Complete readiness checks before submission.'}`)
+      return
+    }
 
     setSubmitting(true)
     setMessage('')
@@ -1384,6 +1475,7 @@ export default function CaseDetail({ onNavigate, role = 'ops' }) {
     setReadinessSummary(calculateReadinessScore(result.caseFile))
     setMessage('Case submitted successfully. Status updated to Submitted for Review.')
     setSubmitting(false)
+    onNavigate?.('dashboard')
   }
 
   const handleDownloadSowDocument = () => {
@@ -1978,7 +2070,7 @@ export default function CaseDetail({ onNavigate, role = 'ops' }) {
         detail: item.description || 'Resolve this risk item before the case can reach full readiness.',
         severity: item.severity || 'Medium',
         evidenceCategory: item.evidenceCategory,
-      })),
+      })).filter((item) => !isBenignSingleJurisdictionAction(item)),
     ]
     return Array.from(
       new Map(gapItems.map((item) => [`${item.section}-${item.title}-${item.detail}`, item])).values(),
@@ -2068,13 +2160,17 @@ export default function CaseDetail({ onNavigate, role = 'ops' }) {
         ].map((action) => {
           const uploadType = action.uploadType || getUploadTypeForAction(`${action.title} ${action.text}`) || 'Additional Supporting Evidence'
           const evidenceLabel = action.evidenceLabel || uploadType
+          const profileUpdate = isProfileUpdateAction(action)
           return {
             ...action,
-            uploadType,
-            evidenceLabel,
+            uploadType: profileUpdate ? null : uploadType,
+            evidenceLabel: profileUpdate ? 'Profile update' : evidenceLabel,
             evidenceCategory: action.evidenceCategory || getEvidenceCategoryForText(`${action.title} ${action.text}`),
+            profileUpdate,
           }
         }).filter((action) => {
+          if (isBenignSingleJurisdictionAction(action)) return false
+          if ((action.uploadedCount || 0) > 0) return false
           const key = `${action.evidenceCategory || action.uploadType || action.title}-${action.text}`.toLowerCase()
           if (actionKeys.has(key)) return false
           actionKeys.add(key)
@@ -2231,11 +2327,17 @@ export default function CaseDetail({ onNavigate, role = 'ops' }) {
                         </p>
                       ) : null}
                       <button
-                        onClick={() => triggerUploadForType(action.uploadType, {
-                          suggestedActionId: action.suggestedActionId,
-                          text: action.text,
-                          evidenceCategory: action.evidenceCategory,
-                        })}
+                        onClick={() => {
+                          if (action.profileUpdate) {
+                            onNavigate?.('new-case')
+                            return
+                          }
+                          triggerUploadForType(action.uploadType, {
+                            suggestedActionId: action.suggestedActionId,
+                            text: action.text,
+                            evidenceCategory: action.evidenceCategory,
+                          })
+                        }}
                         disabled={action.uploadedCount > 0}
                         className={`mt-3 rounded-lg px-3 py-1.5 text-xs font-semibold transition-colors ${
                           action.uploadedCount > 0
@@ -2243,7 +2345,7 @@ export default function CaseDetail({ onNavigate, role = 'ops' }) {
                             : 'bg-primary text-white hover:bg-primary/90'
                         }`}
                       >
-                        {action.uploadedCount > 0 ? 'Evidence already uploaded' : action.priority === 'High' ? 'Upload evidence' : 'Upload optional evidence'}
+                        {action.uploadedCount > 0 ? 'Evidence already uploaded' : action.profileUpdate ? 'Update profile' : action.priority === 'High' ? 'Upload evidence' : 'Upload optional evidence'}
                       </button>
                     </div>
                   </div>
@@ -2255,6 +2357,12 @@ export default function CaseDetail({ onNavigate, role = 'ops' }) {
               )}
               {derived.analysisData.missingSupportingEvidence
                 .filter((item) => getActionPriority(`${item.document} ${item.issue} ${item.reason}`) === 'High')
+                .filter((item) => {
+                  const actionText = `${item.document} ${item.issue} ${item.reason}`
+                  const evidenceCategory = getEvidenceCategoryForText(actionText)
+                  if (!evidenceCategory) return true
+                  return getUploadedEvidenceForCategory(caseFile, evidenceCategory).length === 0
+                })
                 .map((item, index) => (
                 (() => {
                   const actionText = `${item.document} ${item.issue} ${item.reason}`
@@ -2712,9 +2820,11 @@ export default function CaseDetail({ onNavigate, role = 'ops' }) {
               </div>
               <button
                 onClick={handleSubmit}
-                disabled={!canSubmit || submitting}
-                title={!canSubmit ? 'Complete readiness checks before submission.' : 'Submit for Compliance Review'}
-                className="inline-flex items-center gap-2 rounded-2xl bg-primary px-4 py-2 text-sm font-semibold text-white hover:bg-primary/90 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+                disabled={submitting}
+                title={!canSubmit ? (submitIssues[0] || 'Complete readiness checks before submission.') : 'Submit for Compliance Review'}
+                className={`inline-flex items-center gap-2 rounded-2xl px-4 py-2 text-sm font-semibold text-white transition-colors disabled:cursor-not-allowed disabled:opacity-50 ${
+                  canSubmit ? 'bg-primary hover:bg-primary/90' : 'bg-primary/60 hover:bg-primary/70'
+                }`}
               >
                 {submitting ? <Loader2 className="w-4 h-4 animate-spin" /> : <Send className="w-4 h-4" />}
                 Submit for Compliance Review

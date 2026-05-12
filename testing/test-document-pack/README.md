@@ -26,6 +26,7 @@ For business owners, the app requires these categories before submission:
 ## Folder Map
 - `success-case/`: complete, consistent salaried-employee data set expected to pass readiness and submit flow.
 - `success-case-business-owner/`: complete, consistent business-owner data set expected to pass readiness and submit flow.
+- `success-case-business-owner-2/`: second complete business-owner data set with all rule-required categories present.
 - `success-case-high-net-worth-founder/`: complete, consistent high-net-worth founder data set with tens-of-millions net worth and a realistic private banking account purpose.
 - `success-case-us-person-fatca/`: complete US-person salaried-employee data set for testing FATCA rule evaluation.
 - `success-case-us-person-fatca-usd/`: clean USD high-net-worth US-person success case above the USD 5M private-bank minimum.
@@ -59,6 +60,19 @@ For business owners, the app requires these categories before submission:
 3. Run `Run AI Analysis`.
 4. Verify readiness score, risk level, mismatch output, and submission behavior.
 5. If AI suggests optional business-owner follow-up evidence, upload files `13` through `16` for certified share-sale proceeds, FY2026 audited financial statements, full sanctions/PEP/adverse media screening, and ongoing monitoring plan.
+
+### Business Owner Success Case 2
+1. Create a new case in the app with:
+   - Client Name: `Nadia Koh Li Wen`
+   - Nationality: `Singapore`
+   - Residence: `Singapore`
+   - Occupation: `Business Owner`
+   - Business Name: `Meridian Artisan Foods Pte Ltd`
+   - Net Worth: `9800000`
+   - Purpose: `Private banking onboarding, discretionary investment management, and long-term wealth planning`
+2. Upload each file from `success-case-business-owner-2/` into the matching category listed in that folder's README.
+3. Run `Run AI Analysis`.
+4. Verify there are no missing required categories and that the AI does not request Passport, Tax Residency, Bank Statements, business registry, shareholding, company financials, or dividend statements again.
 
 ### High-Net-Worth Founder Success Case
 1. Create a new case in the app with:

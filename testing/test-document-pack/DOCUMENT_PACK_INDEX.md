@@ -10,6 +10,11 @@ This index lists additional generated files for broader test coverage.
 - Contains the relevant business-owner success-path documents: identity, address proof, tax residency, SoW declaration, bank statements, business registry extract, shareholding structure, company financial statements, and dividend statements.
 - Also includes supporting evidence for secondary share sale proceeds, certified transaction proceeds, FY2026 audited financial statements, full sanctions/PEP/adverse media screening, ongoing monitoring plan, and enhanced due-diligence summary.
 
+## Success Case - Business Owner 2
+- Contains a second clean business-owner case for Nadia Koh Li Wen and Meridian Artisan Foods Pte Ltd.
+- Includes all rule-required business-owner categories: identity, address proof, tax residency, SoW declaration, bank statements, business registry extract, shareholding structure, company financial statements, and dividend statements.
+- Also includes optional sanctions/PEP screening support for clean-risk testing.
+
 ## Success Case - US Person FATCA USD
 - Contains a clean USD high-net-worth US-person case for Daniel Whitmore.
 - Includes standard salaried-employee documents plus rule-required W-9 and FATCA self-certification.

@@ -29,6 +29,7 @@ import {
   submitComplianceDecision,
   updateCaseData,
   updateComplianceChecklist,
+  updateRiskStatus,
   COMPLIANCE_CHECKLIST_ITEMS,
 } from '../lib/caseFiles'
 
@@ -41,6 +42,12 @@ function formatDateTime(value) {
     hour: 'numeric',
     minute: '2-digit',
   })
+}
+
+function getDaysSince(value) {
+  const parsed = Date.parse(value || '')
+  if (Number.isNaN(parsed)) return null
+  return Math.max(0, Math.floor((Date.now() - parsed) / (1000 * 60 * 60 * 24)))
 }
 
 function statusTone(status) {
@@ -150,6 +157,18 @@ function getSowSupportingEvidence(caseFile) {
     || ''
 }
 
+function groupChecklistItems(items = []) {
+  const groups = ['KYC', 'Tax', 'SoW', 'SoF', 'Risk', 'Rule-Driven', 'Other']
+  const grouped = new Map(groups.map((group) => [group, []]))
+  items.forEach((item) => {
+    const rawCategory = String(item.category || (item.ruleDriven ? 'Rule-Driven' : 'Other'))
+    const key = groups.find((group) => rawCategory.toLowerCase().includes(group.toLowerCase())) || rawCategory || 'Other'
+    if (!grouped.has(key)) grouped.set(key, [])
+    grouped.get(key).push(item)
+  })
+  return Array.from(grouped.entries()).filter(([, values]) => values.length > 0)
+}
+
 function escapeHtml(value) {
   return String(value || '')
     .replaceAll('&', '&amp;')
@@ -173,9 +192,12 @@ export default function ComplianceCaseReview({ onNavigate }) {
   const [documentCommentModal, setDocumentCommentModal] = useState(null)
   const [documentCommentText, setDocumentCommentText] = useState('')
   const [attemptedSubmit, setAttemptedSubmit] = useState(false)
+  const [expandedDocumentText, setExpandedDocumentText] = useState({})
 
   const renderDocumentControls = (document) => {
     const currentReviewStatus = document.reviewStatus
+    const documentKey = document.id || document.name || document.category || 'document'
+    const textExpanded = Boolean(expandedDocumentText[documentKey])
     return (
       <div key={document.id || document.name} className="rounded-xl border border-outline/10 bg-surface-container-lowest px-3 py-3">
         <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
@@ -194,11 +216,21 @@ export default function ComplianceCaseReview({ onNavigate }) {
         </div>
         <div className="flex flex-wrap gap-2">
           <button
-            onClick={() => handleViewDocument(document)}
+            onClick={() => setExpandedDocumentText((current) => ({
+              ...current,
+              [documentKey]: !current[documentKey],
+            }))}
             className="inline-flex items-center gap-1 rounded-full border border-primary/20 bg-primary/10 px-2.5 py-1 text-xs font-semibold text-primary hover:bg-primary/15"
           >
+            <FileText className="h-3 w-3" />
+            {textExpanded ? 'Hide Text' : 'Show Text'}
+          </button>
+          <button
+            onClick={() => handleViewDocument(document)}
+            className="inline-flex items-center gap-1 rounded-full border border-outline/20 bg-surface px-2.5 py-1 text-xs font-semibold text-on-surface hover:border-primary/30"
+          >
             <Eye className="h-3 w-3" />
-            Open Full Document
+            Open Original
           </button>
           <button
             onClick={() => setSelectedDocument(document)}
@@ -239,6 +271,19 @@ export default function ComplianceCaseReview({ onNavigate }) {
             {document.reviewComment ? 'Edit Comment' : 'Add Comment'}
           </button>
         </div>
+        {textExpanded ? (
+          <div className="mt-3 rounded-xl border border-outline/10 bg-surface px-3 py-3">
+            <div className="mb-2 flex items-center justify-between gap-3">
+              <p className="text-xs font-semibold uppercase tracking-[0.14em] text-on-surface-variant">Extracted Text</p>
+              <span className="text-[11px] text-on-surface-variant">
+                {String(document.extractedText || '').length.toLocaleString()} chars
+              </span>
+            </div>
+            <div className="max-h-[520px] overflow-y-auto whitespace-pre-wrap text-xs leading-5 text-on-surface-variant">
+              {document.extractedText || 'No extracted text is available for this document.'}
+            </div>
+          </div>
+        ) : null}
       </div>
     )
   }
@@ -340,8 +385,22 @@ export default function ComplianceCaseReview({ onNavigate }) {
     decisionNoteMissing ? 'Decision note is required.' : '',
   ].filter(Boolean)
   const approveDisabled = approvalIssues.length > 0
-  const anyDecisionDisabled = decisionNoteMissing
+  const requestInfoDisabled = decisionNoteMissing
+  const rejectDisabled = decisionNoteMissing
+  const escalateDisabled = decisionNoteMissing
   const comments = [...(caseFile?.comments || [])].sort((a, b) => new Date(b.createdAt || 0) - new Date(a.createdAt || 0))
+  const checklistGroups = groupChecklistItems(checklist?.items || [])
+  const reviewStartedAt = caseFile?.reviewStartedAt || caseFile?.updatedAt || caseFile?.createdAt
+  const agingDays = getDaysSince(reviewStartedAt)
+  const documentCompletionText = `${completion?.requiredCompletedCount ?? 0}/${completion?.requiredTotal ?? 0}`
+  const openBlockers = [
+    ...(completion?.missingRequiredDocuments || []),
+    ...riskFlags.filter((flag) => /high|critical/i.test(String(flag.severity || ''))),
+    ...(checklist?.items || []).filter((item) => !item.checked),
+  ].length
+  const nextBestAction = approvalIssues.length === 0
+    ? 'Ready for approval.'
+    : approvalIssues[0] || 'Continue review.'
 
   const handleAddComment = async () => {
     if (!caseFile) return
@@ -380,7 +439,25 @@ export default function ComplianceCaseReview({ onNavigate }) {
       return
     }
     setDecisionNote('')
-    setMessage(decision === 'approve' ? 'Case approved and sent to Operations.' : decision === 'request_info' ? 'Case returned to RM as Request More Information.' : 'Case rejected and locked.')
+    setMessage(decision === 'approve'
+      ? 'Case approved and sent to Operations.'
+      : decision === 'request_info'
+        ? 'Case returned to RM as Request More Information.'
+        : decision === 'escalate'
+          ? 'Case escalated to Senior Compliance.'
+          : 'Case rejected and locked.')
+    await loadCase()
+    onNavigate?.('dashboard')
+  }
+
+  const handleRiskStatusChange = async (riskId, status) => {
+    if (!caseFile || !riskId) return
+    const result = await updateRiskStatus(caseFile.id, riskId, status)
+    if (!result.ok) {
+      setMessage(result.reason)
+      return
+    }
+    setMessage('Risk review status updated.')
     await loadCase()
   }
 
@@ -422,6 +499,82 @@ export default function ComplianceCaseReview({ onNavigate }) {
       </html>
     `)
     documentWindow.document.close()
+  }
+
+  const renderDocumentTableRow = (item) => {
+    const validation = getDocumentValidation(item)
+    const linkedDocuments = item.documents || []
+    const primaryDocument = linkedDocuments[0] || null
+    const currentReviewStatus = primaryDocument?.reviewStatus
+    const rowKey = item.key || item.label
+
+    return (
+      <div key={rowKey} className="grid grid-cols-[1.15fr_1.35fr_0.9fr_0.75fr_0.85fr_1.35fr] items-center gap-3 border-b border-outline/10 px-3 py-2.5 last:border-b-0">
+        <div className="min-w-0">
+          <p className="truncate text-sm font-semibold text-on-surface" title={item.label}>{item.label}</p>
+          <p className="truncate text-xs text-on-surface-variant" title={item.missingReason || item.reason || ''}>{item.missingReason || item.reason || '--'}</p>
+        </div>
+        <div className="min-w-0">
+          <p className="truncate text-sm text-on-surface" title={primaryDocument?.name || 'No file uploaded'}>
+            {primaryDocument?.name || 'No file uploaded'}
+          </p>
+          {linkedDocuments.length > 1 ? (
+            <p className="text-xs text-on-surface-variant">+{linkedDocuments.length - 1} more file{linkedDocuments.length > 2 ? 's' : ''}</p>
+          ) : null}
+        </div>
+        <p className="truncate text-xs font-medium text-on-surface-variant" title={item.category}>{item.category || '--'}</p>
+        <span className={`w-fit rounded-full px-2.5 py-1 text-xs font-semibold ${docStatusTone(item.status)}`}>
+          {item.status === 'uploaded' ? 'Uploaded' : item.status === 'needs_review' ? 'Review' : 'Missing'}
+        </span>
+        <span className={`w-fit rounded-full px-2.5 py-1 text-xs font-semibold ${validation.tone}`}>{validation.label}</span>
+        <div className="flex flex-wrap items-center gap-1.5">
+          {primaryDocument ? (
+            <>
+              <button
+                onClick={() => setSelectedDocument(primaryDocument)}
+                className="rounded-lg border border-outline/20 bg-surface px-2 py-1 text-xs font-semibold text-on-surface hover:border-primary/30"
+                title="Preview"
+              >
+                Preview
+              </button>
+              <button
+                onClick={() => handleDocumentReview(primaryDocument.id, 'accept')}
+                disabled={currentReviewStatus === 'accept'}
+                className="rounded-lg border border-success/30 bg-success/10 px-2 py-1 text-xs font-semibold text-success hover:bg-success/15 disabled:opacity-50"
+                title="Accept"
+              >
+                Accept
+              </button>
+              <button
+                onClick={() => handleDocumentReview(primaryDocument.id, 'needs_clarification')}
+                disabled={currentReviewStatus === 'needs_clarification'}
+                className="rounded-lg border border-warning/30 bg-warning/10 px-2 py-1 text-xs font-semibold text-warning hover:bg-warning/15 disabled:opacity-50"
+                title="Needs clarification"
+              >
+                Clarify
+              </button>
+              <button
+                onClick={() => handleDocumentReview(primaryDocument.id, 'reject')}
+                disabled={currentReviewStatus === 'reject'}
+                className="rounded-lg border border-error/30 bg-error/10 px-2 py-1 text-xs font-semibold text-error hover:bg-error/15 disabled:opacity-50"
+                title="Reject"
+              >
+                Reject
+              </button>
+              <button
+                onClick={() => setDocumentCommentModal({ documentId: primaryDocument.id, action: 'comment', existingComment: primaryDocument.reviewComment })}
+                className="rounded-lg border border-outline/20 bg-surface px-2 py-1 text-xs font-semibold text-on-surface hover:border-primary/30"
+                title="Comment"
+              >
+                Comment
+              </button>
+            </>
+          ) : (
+            <span className="text-xs text-on-surface-variant">Awaiting upload</span>
+          )}
+        </div>
+      </div>
+    )
   }
 
   const handleDownloadSowDocument = () => {
@@ -487,33 +640,53 @@ export default function ComplianceCaseReview({ onNavigate }) {
   }
 
   return (
-    <div className="min-h-screen bg-surface p-8 pb-10">
-      <div className="mx-auto max-w-7xl space-y-6">
+    <div className="min-h-screen bg-surface px-5 py-5 pb-10 md:px-8">
+      <div className="mx-auto max-w-[1480px] space-y-4">
         <button onClick={() => onNavigate?.('dashboard')} className="inline-flex items-center gap-2 text-sm font-semibold text-primary">
           <ArrowLeft className="h-4 w-4" />
           Back to Compliance Queue
         </button>
 
-        <section className="rounded-3xl border border-outline/10 bg-surface-container-lowest p-6 shadow-ambient">
-          <div className="flex flex-wrap items-start justify-between gap-5">
-            <div>
-              <p className="mb-2 text-xs font-semibold uppercase tracking-[0.24em] text-primary">Compliance Case Review</p>
-              <h1 className="font-display text-4xl font-bold text-on-surface">{caseFile.clientName || 'Unnamed Client'}</h1>
-              <p className="mt-2 text-sm text-on-surface-variant">Case ID: {caseFile.id}</p>
+        <section className="overflow-hidden rounded-2xl border border-outline/10 bg-surface-container-lowest shadow-ambient">
+          <div className="border-b border-outline/10 px-6 py-5">
+            <div className="grid grid-cols-1 gap-4 xl:grid-cols-[minmax(430px,1fr)_minmax(0,1.65fr)]">
+              <div className="min-w-0">
+                <div className="mb-2 flex flex-wrap items-center gap-2">
+                  <p className="text-xs font-bold uppercase tracking-[0.16em] text-primary">Compliance Case Review</p>
+                  <span className={`inline-flex rounded-full px-2.5 py-1 text-xs font-semibold ${statusTone(caseFile.status)}`}>{caseFile.status}</span>
+                </div>
+                <h1 className="font-display text-3xl font-bold leading-tight text-on-surface">{caseFile.clientName || 'Unnamed Client'}</h1>
+                <p className="mt-2 text-sm font-medium text-on-surface-variant">Case ID: <span className="text-on-surface">{caseFile.id}</span></p>
+              </div>
+              <div className="flex flex-wrap items-start justify-start gap-2 xl:justify-end">
+                {[
+                  ['Readiness', <span className="text-base font-bold text-success">{readinessScore}%</span>],
+                  ['Risk', <span className={`inline-flex rounded-full px-2.5 py-1 text-xs font-semibold ${riskTone(riskLevel)}`}>{riskLevel}</span>],
+                  ['Reviewer', <span className="truncate text-sm font-semibold text-on-surface">{caseFile.assignedComplianceOfficer || 'Unassigned'}</span>],
+                  ['Aging', <span className="text-sm font-semibold text-on-surface">{agingDays === null ? '--' : `${agingDays} day${agingDays === 1 ? '' : 's'}`}</span>],
+                  ['Updated', <span className="truncate text-sm font-semibold text-on-surface">{formatDateTime(caseFile.updatedAt)}</span>],
+                ].map(([label, value]) => (
+                  <div key={label} className="flex max-w-full items-center gap-2 rounded-full border border-outline/10 bg-surface px-3.5 py-2">
+                    <span className="text-xs font-semibold text-on-surface-variant">{label}</span>
+                    <span className="min-w-0">{value}</span>
+                  </div>
+                ))}
+              </div>
             </div>
-            <div className="grid grid-cols-2 gap-3 md:grid-cols-3">
-              <div className="rounded-2xl bg-surface px-4 py-3">
-                <p className="text-xs uppercase tracking-[0.16em] text-on-surface-variant">Status</p>
-                <span className={`mt-3 inline-flex rounded-full px-3 py-1 text-xs font-semibold ${statusTone(caseFile.status)}`}>{caseFile.status}</span>
-              </div>
-              <div className="rounded-2xl bg-surface px-4 py-3">
-                <p className="text-xs uppercase tracking-[0.16em] text-on-surface-variant">Readiness</p>
-                <p className="mt-2 text-2xl font-bold text-success">{readinessScore}%</p>
-              </div>
-              <div className="rounded-2xl bg-surface px-4 py-3">
-                <p className="text-xs uppercase tracking-[0.16em] text-on-surface-variant">Risk</p>
-                <span className={`mt-3 inline-flex rounded-full px-3 py-1 text-xs font-semibold ${riskTone(riskLevel)}`}>{riskLevel}</span>
-              </div>
+          </div>
+          <div className="flex flex-wrap items-center justify-between gap-3 bg-surface px-6 py-3">
+            <div className="flex min-w-0 items-center gap-3">
+              <AlertTriangle className="h-4 w-4 shrink-0 text-warning" />
+              <p className="min-w-0 text-sm text-on-surface-variant">
+                <span className="font-semibold text-on-surface">Next best action:</span> {nextBestAction}
+              </p>
+            </div>
+            <div className="flex items-center gap-2 text-xs text-on-surface-variant">
+              <span>Documents {documentCompletionText}</span>
+              <span className="h-1 w-1 rounded-full bg-outline" />
+              <span>Checklist {checklist?.completed ?? 0}/{checklist?.total ?? 0}</span>
+              <span className="h-1 w-1 rounded-full bg-outline" />
+              <span>{openBlockers} blocker{openBlockers === 1 ? '' : 's'}</span>
             </div>
           </div>
         </section>
@@ -524,83 +697,135 @@ export default function ComplianceCaseReview({ onNavigate }) {
           </div>
         ) : null}
 
-        <div className="grid grid-cols-1 gap-6 xl:grid-cols-[minmax(0,1fr)_420px]">
-          <div className="space-y-6">
-            <section className="rounded-3xl border border-outline/10 bg-surface-container-lowest p-6 shadow-ambient">
-              <div className="mb-5 flex items-center gap-3">
+        <div className="grid grid-cols-1 gap-5 xl:grid-cols-[minmax(0,1fr)_420px]">
+          <div className="space-y-4">
+            <section className="rounded-xl border border-outline/10 bg-surface-container-lowest p-4 shadow-ambient">
+              <div className="mb-4 flex items-center gap-3">
                 <ShieldCheck className="h-5 w-5 text-primary" />
-                <h2 className="font-display text-2xl font-bold text-on-surface">Client Profile</h2>
+                <h2 className="font-display text-xl font-bold text-on-surface">Client Profile</h2>
               </div>
-              <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
+              <div className="grid grid-cols-1 gap-2 md:grid-cols-2">
                 {[
                   ['Name', caseFile.clientName],
                   ['Nationality', caseFile.nationality],
                   ['Occupation', caseFile.occupation],
                   ['Risk Level', riskLevel],
-                  ['Source of Wealth', getSourceOfWealth(caseFile), 'md:col-span-2'],
+                  ['Residence', caseFile.residence || caseFile.countryOfResidence],
+                  ['Net Worth', caseFile.netWorth ? `${caseFile.netWorthCurrency || 'USD'} ${caseFile.netWorth}` : '--'],
+                  ['Account Purpose', caseFile.purpose, 'md:col-span-2'],
                 ].map(([label, value, spanClass = '']) => (
-                  <div key={label} className={`rounded-2xl bg-surface p-4 ${spanClass}`}>
-                    <p className="text-xs uppercase tracking-[0.16em] text-on-surface-variant">{label}</p>
-                    <p className={`mt-3 text-sm leading-6 text-on-surface ${label === 'Source of Wealth' ? 'font-medium max-w-4xl' : 'font-semibold'}`}>{value || '--'}</p>
+                  <div key={label} className={`rounded-xl border border-outline/5 bg-surface px-3 py-2.5 ${spanClass}`}>
+                    <p className="text-[11px] uppercase tracking-[0.16em] text-on-surface-variant">{label}</p>
+                    <p className="mt-1 text-sm font-semibold leading-5 text-on-surface">{value || '--'}</p>
                   </div>
                 ))}
               </div>
-              <div className="mt-4 flex justify-end">
+            </section>
+
+            <section className="rounded-2xl border border-outline/10 bg-surface-container-lowest p-4 shadow-ambient">
+              <div className="mb-4 flex items-center justify-between gap-3">
+                <div className="flex items-center gap-3">
+                  <ShieldCheck className="h-5 w-5 text-primary" />
+                  <h2 className="font-display text-xl font-bold text-on-surface">Source of Wealth</h2>
+                </div>
                 <button
                   onClick={handleDownloadSowDocument}
-                  className="inline-flex items-center gap-2 rounded-xl border border-primary/20 bg-primary/10 px-3 py-2 text-xs font-semibold text-primary hover:bg-primary/15"
+                  className="inline-flex h-8 w-8 items-center justify-center rounded-lg border border-primary/20 bg-primary/10 text-primary hover:bg-primary/15"
+                  title="Download SoW document"
                 >
                   <Download className="h-4 w-4" />
-                  Download SoW Document
                 </button>
+              </div>
+              <div className="space-y-2">
+                <div className="rounded-xl border border-outline/5 bg-surface px-3 py-2.5">
+                  <p className="text-[11px] uppercase tracking-[0.16em] text-on-surface-variant">Primary Source</p>
+                  <p className="mt-1 text-sm leading-5 text-on-surface">{getSourceOfWealth(caseFile)}</p>
+                </div>
+                <details className="rounded-xl border border-outline/5 bg-surface px-3 py-2.5">
+                  <summary className="cursor-pointer text-[11px] font-semibold uppercase tracking-[0.16em] text-on-surface-variant">Narrative & Evidence</summary>
+                  <p className="mt-2 text-xs leading-5 text-on-surface-variant">{getSowSupportingEvidence(caseFile) || 'No supporting evidence summary available.'}</p>
+                  <p className="mt-2 text-xs leading-5 text-on-surface-variant">{getSowNarrative(caseFile) || 'No SoW narrative available.'}</p>
+                </details>
               </div>
             </section>
 
-            <section className="rounded-3xl border border-outline/10 bg-surface-container-lowest p-6 shadow-ambient">
-              <div className="mb-5 flex items-center gap-3">
-                <FileText className="h-5 w-5 text-primary" />
-                <h2 className="font-display text-2xl font-bold text-on-surface">Document Review</h2>
+            <section className="rounded-2xl border border-outline/10 bg-surface-container-lowest p-4 shadow-ambient">
+              <div className="mb-4 flex items-center justify-between gap-3">
+                <div className="flex items-center gap-3">
+                  <ShieldAlert className="h-5 w-5 text-primary" />
+                  <h2 className="font-display text-xl font-bold text-on-surface">AI Risk</h2>
+                </div>
+                <span className={`inline-flex rounded-full px-3 py-1 text-xs font-semibold ${riskTone(riskLevel)}`}>{riskLevel}</span>
               </div>
-              <div className="space-y-3">
-                {(completion?.requiredDocuments || []).map((item) => {
-                  const validation = getDocumentValidation(item)
-                  const linkedDocuments = item.documents || []
-                  const firstDoc = item.documents?.[0] || null
-                  const docReviewStatus = firstDoc?.reviewStatus
-                  return (
-                    <div key={item.label} className="rounded-2xl border border-outline/10 bg-surface p-4">
-                      <div className="flex flex-wrap items-start justify-between gap-3">
-                        <div>
-                          <p className="font-semibold text-on-surface">{item.label}</p>
-                          <p className="mt-1 text-xs text-on-surface-variant">{item.category}</p>
-                          {firstDoc?.reviewComment && (
-                            <p className="mt-1 text-xs text-on-surface-variant italic">"{firstDoc.reviewComment}"</p>
-                          )}
-                        </div>
-                        <div className="flex flex-wrap gap-2">
-                          <span className={`rounded-full px-2.5 py-1 text-xs font-semibold ${docStatusTone(item.status)}`}>
-                            {item.status === 'uploaded' ? 'Uploaded' : item.status === 'needs_review' ? 'In Review' : 'Missing'}
-                          </span>
-                          <span className={`rounded-full px-2.5 py-1 text-xs font-semibold ${validation.tone}`}>{validation.label}</span>
-                          {docReviewStatus && (
-                            <span className={`rounded-full px-2.5 py-1 text-xs font-semibold ${
-                              docReviewStatus === 'accept' ? 'bg-success/12 text-success' :
-                              docReviewStatus === 'needs_clarification' ? 'bg-warning/15 text-warning' :
-                              'bg-error/10 text-error'
-                            }`}>
-                              {docReviewStatus === 'accept' ? 'Accepted' : docReviewStatus === 'needs_clarification' ? 'Needs Clarification' : 'Rejected'}
-                            </span>
-                          )}
-                        </div>
+              <div className="space-y-2">
+                {riskFlags.length > 0 ? riskFlags.map((flag) => (
+                  <details key={flag.id} className={`rounded-xl border px-3 py-2.5 ${/high|critical/i.test(String(flag.severity || '')) ? 'border-error/20 bg-error/5' : 'border-warning/20 bg-warning/5'}`}>
+                    <summary className="cursor-pointer list-none">
+                      <div className="flex items-center justify-between gap-2">
+                        <p className="text-sm font-semibold leading-5 text-on-surface">{flag.title}</p>
+                        <span className={`shrink-0 rounded-full px-2 py-0.5 text-[11px] font-semibold ${riskTone(/high|critical/i.test(String(flag.severity || '')) ? 'High' : 'Medium')}`}>
+                          {flag.severity}
+                        </span>
                       </div>
-                      {linkedDocuments.length > 0 && (
-                        <div className="mt-4 space-y-3 border-t border-outline/10 pt-3">
-                          {linkedDocuments.map((document) => renderDocumentControls(document))}
-                        </div>
-                      )}
+                    </summary>
+                    <p className="mt-2 text-xs leading-5 text-on-surface-variant">{flag.description || 'Risk rationale not provided.'}</p>
+                    <div className="mt-2">
+                      <label className="text-[11px] font-semibold uppercase tracking-[0.12em] text-on-surface-variant">Review Status</label>
+                      <select
+                        value={caseFile?.riskStatuses?.[flag.id]?.status || 'open'}
+                        onChange={(event) => {
+                          if (event.target.value !== 'open') {
+                            handleRiskStatusChange(flag.id, event.target.value)
+                          }
+                        }}
+                        className="mt-1 w-full rounded-lg border border-outline/15 bg-surface px-2 py-1.5 text-xs text-on-surface focus:outline-none focus:ring-2 focus:ring-primary/20"
+                      >
+                        <option value="open">Open</option>
+                        <option value="accepted">Accepted Risk</option>
+                        <option value="false_positive">False Positive</option>
+                        <option value="needs_followup">RM Follow-up</option>
+                        <option value="escalated">Escalated</option>
+                      </select>
                     </div>
-                  )
+                  </details>
+                )) : (
+                  <div className="rounded-xl border border-success/10 bg-success/5 px-3 py-2.5">
+                    <p className="text-sm font-semibold text-success">No AI risk flags detected.</p>
+                  </div>
+                )}
+              </div>
+            </section>
+
+            <section className="rounded-2xl border border-outline/10 bg-surface-container-lowest p-4 shadow-ambient">
+              <div className="mb-5 flex flex-wrap items-center justify-between gap-3">
+                <div className="flex items-center gap-3">
+                  <FileText className="h-5 w-5 text-primary" />
+                  <h2 className="font-display text-xl font-bold text-on-surface">Document Review</h2>
+                </div>
+                <span className={`rounded-full px-3 py-1 text-xs font-semibold ${completion?.allRequiredComplete ? 'bg-success/12 text-success' : 'bg-warning/15 text-warning'}`}>
+                  {documentCompletionText} required complete
+                </span>
+              </div>
+              <div className="overflow-x-auto rounded-xl border border-outline/10 bg-surface">
+                <div className="min-w-[980px]">
+                  <div className="grid grid-cols-[1.15fr_1.35fr_0.9fr_0.75fr_0.85fr_1.35fr] gap-3 border-b border-outline/10 bg-surface-container-low px-3 py-2 text-[11px] font-semibold uppercase tracking-[0.12em] text-on-surface-variant">
+                    <p>Category</p>
+                    <p>File</p>
+                    <p>Type</p>
+                    <p>Upload</p>
+                    <p>Validation</p>
+                    <p>Review Action</p>
+                  </div>
+                  {(completion?.requiredDocuments || []).map((item) => renderDocumentTableRow(item))}
+                </div>
+              </div>
+              <div className="mt-3 space-y-3 xl:hidden">
+                {(completion?.requiredDocuments || []).map((item) => {
+                  const linkedDocuments = item.documents || []
+                  return linkedDocuments.length > 0 ? linkedDocuments.map((document) => renderDocumentControls(document)) : null
                 })}
+              </div>
+              <div className="mt-3">
                 {(() => {
                   const shownIds = new Set((completion?.requiredDocuments || []).flatMap((item) => (
                     item.documents || []
@@ -610,7 +835,7 @@ export default function ComplianceCaseReview({ onNavigate }) {
                   if (additionalDocuments.length === 0) return null
 
                   return (
-                    <div className="rounded-2xl border border-outline/10 bg-surface p-4">
+                    <div className="rounded-xl border border-outline/10 bg-surface p-3">
                       <div className="flex flex-wrap items-start justify-between gap-3">
                         <div>
                           <p className="font-semibold text-on-surface">Additional RM Uploaded Evidence</p>
@@ -628,184 +853,47 @@ export default function ComplianceCaseReview({ onNavigate }) {
                 })()}
               </div>
             </section>
-
-            <section className="rounded-3xl border border-outline/10 bg-surface-container-lowest p-6 shadow-ambient">
-              <div className="mb-5 flex items-center justify-between gap-3">
-                <div className="flex items-center gap-3">
-                  <CheckSquare className="h-5 w-5 text-primary" />
-                  <h2 className="font-display text-2xl font-bold text-on-surface">Compliance Checklist</h2>
-                </div>
-                {checklist && (
-                  <span className={`rounded-full px-3 py-1 text-xs font-semibold ${
-                    checklist.allComplete ? 'bg-success/12 text-success' : 'bg-warning/15 text-warning'
-                  }`}>
-                    {checklist.completed}/{checklist.total} Complete
-                  </span>
-                )}
-              </div>
-              <div className="space-y-3">
-                {checklist?.items.map((item) => (
-                  <label
-                    key={item.key}
-                    className="flex cursor-pointer items-start gap-3 rounded-2xl border border-outline/10 bg-surface p-4 hover:bg-surface-container-low transition-colors"
-                  >
-                    <div className="mt-0.5">
-                      {item.checked ? (
-                        <CheckCircle2 className="h-5 w-5 text-success" />
-                      ) : (
-                        <Circle className="h-5 w-5 text-on-surface-variant" />
-                      )}
-                    </div>
-                    <div className="flex-1">
-                      <div className="flex items-center justify-between">
-                        <p className="font-semibold text-on-surface">{item.label}</p>
-                        <span className="rounded-full bg-surface-container px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wider text-on-surface-variant">
-                          {item.ruleDriven ? 'Rule-driven' : item.category}
-                        </span>
-                      </div>
-                      {item.ruleDriven ? (
-                        <p className="mt-1 text-xs text-on-surface-variant">
-                          {item.reason || 'Required by rule'} {item.policyReference ? `Policy: ${item.policyReference}` : ''}
-                        </p>
-                      ) : null}
-                      {item.checked && item.checkedAt && (
-                        <p className="mt-1 text-xs text-on-surface-variant">
-                          Checked by {item.checkedBy} at {new Date(item.checkedAt).toLocaleString()}
-                        </p>
-                      )}
-                      {item.overrideReason ? (
-                        <p className="mt-1 text-xs text-warning">
-                          Override: {item.overrideReason} ({item.overridePolicyReference})
-                        </p>
-                      ) : null}
-                    </div>
-                    <input
-                      type="checkbox"
-                      checked={!!item.checked}
-                      onChange={(e) => handleChecklistToggle(item.key, e.target.checked)}
-                      className="sr-only"
-                    />
-                  </label>
-                ))}
-              </div>
-              {!checklist?.allComplete && (
-                <p className="mt-4 rounded-xl bg-warning/10 px-4 py-3 text-xs text-warning">
-                  All checklist items must be completed before approval.
-                </p>
-              )}
-            </section>
-
-            <section className="rounded-3xl border border-outline/10 bg-surface-container-lowest p-6 shadow-ambient">
-              <div className="mb-5 flex items-center gap-3">
-                <ShieldAlert className="h-5 w-5 text-primary" />
-                <h2 className="font-display text-2xl font-bold text-on-surface">AI Risk Analysis</h2>
-              </div>
-              <div className="mb-4 rounded-2xl bg-surface p-4">
-                <p className="text-xs uppercase tracking-[0.16em] text-on-surface-variant">Risk Score</p>
-                <span className={`mt-3 inline-flex rounded-full px-3 py-1 text-sm font-semibold ${riskTone(riskLevel)}`}>{riskLevel}</span>
-              </div>
-
-              {/* Debug info - shows why risk is calculated */}
-              <div className="mb-4 rounded-2xl bg-surface-container-high p-3">
-                <p className="text-[10px] font-semibold uppercase tracking-wider text-on-surface-variant mb-2">Risk Factors</p>
-                <div className="space-y-1 text-xs">
-                  <p className="text-on-surface">Documents Complete: <span className={completion?.allRequiredComplete ? 'text-success' : 'text-error'}>{completion?.allRequiredComplete ? 'Yes' : 'No'}</span></p>
-                  <p className="text-on-surface">Readiness Score: <span className={readinessScore === 100 ? 'text-success' : 'text-warning'}>{readinessScore}%</span></p>
-                  <p className="text-on-surface">AI Risks Count: <span className="text-on-surface-variant">{caseFile?.aiAnalysis?.risks?.length || 0}</span></p>
-                  <p className="text-on-surface">Mismatches Count: <span className="text-on-surface-variant">{caseFile?.aiAnalysis?.mismatches?.length || 0}</span></p>
-                  <p className="text-on-surface">Risk Flags Generated: <span className="text-on-surface-variant">{riskFlags.length}</span></p>
-                </div>
-              </div>
-
-              <div className="space-y-3">
-                {riskFlags.length > 0 ? riskFlags.map((flag) => (
-                  <div key={flag.id} className={`rounded-2xl border p-4 ${/high|critical/i.test(String(flag.severity || '')) ? 'border-error/20 bg-error/5' : 'border-warning/20 bg-warning/5'}`}>
-                    <div className="flex items-start justify-between gap-3">
-                      <p className="font-semibold text-on-surface">{flag.title}</p>
-                      <span className={`rounded-full px-2.5 py-1 text-xs font-semibold ${riskTone(/high|critical/i.test(String(flag.severity || '')) ? 'High' : 'Medium')}`}>
-                        {flag.severity}
-                      </span>
-                    </div>
-                    {flag.description ? <p className="mt-2 text-sm leading-6 text-on-surface-variant">{flag.description}</p> : null}
-                  </div>
-                )) : (
-                  <div className="rounded-2xl border border-success/10 bg-success/5 p-4">
-                    <p className="text-sm font-semibold text-success">No AI risk flags detected.</p>
-                  </div>
-                )}
-              </div>
-            </section>
-
           </div>
 
-          <aside className="space-y-6">
-            <section className="rounded-3xl border border-outline/10 bg-surface-container-lowest p-6 shadow-ambient">
-              <div className="mb-5 flex items-center gap-3">
-                <MessageCircle className="h-5 w-5 text-primary" />
-                <h2 className="font-display text-xl font-bold text-on-surface">Comments</h2>
-              </div>
-              <div className="space-y-3">
-                <select
-                  value={commentAudience}
-                  onChange={(event) => setCommentAudience(event.target.value)}
-                  className="w-full rounded-xl border border-outline/15 bg-surface px-3 py-2.5 text-sm text-on-surface focus:outline-none focus:ring-2 focus:ring-primary/20"
-                >
-                  <option value="Internal">Internal note</option>
-                  <option value="RM Feedback">Feedback for RM</option>
-                </select>
-                <textarea
-                  value={commentText}
-                  onChange={(event) => setCommentText(event.target.value)}
-                  rows={4}
-                  placeholder="Add compliance note..."
-                  className="w-full resize-none rounded-xl border border-outline/15 bg-surface px-3 py-2.5 text-sm text-on-surface focus:outline-none focus:ring-2 focus:ring-primary/20"
-                />
-                <button onClick={handleAddComment} className="inline-flex w-full items-center justify-center gap-2 rounded-xl bg-primary px-4 py-2.5 text-sm font-semibold text-white hover:bg-primary/90">
-                  <Send className="h-4 w-4" />
-                  Add Comment
-                </button>
-              </div>
-              <div className="mt-5 space-y-3">
-                {comments.length > 0 ? comments.map((comment) => (
-                  <div key={comment.id} className="rounded-2xl bg-surface p-4">
-                    <div className="flex items-center justify-between gap-3">
-                      <p className="text-sm font-semibold text-on-surface">{comment.author || 'Compliance Officer'}</p>
-                      <span className="rounded-full bg-surface-container-high px-2 py-1 text-[11px] font-semibold text-on-surface-variant">{comment.audience || 'Internal'}</span>
-                    </div>
-                    <p className="mt-2 text-sm leading-6 text-on-surface-variant">{comment.text}</p>
-                    <p className="mt-2 text-xs text-on-surface-variant">{formatDateTime(comment.createdAt)}</p>
-                  </div>
-                )) : (
-                  <p className="rounded-2xl bg-surface p-4 text-sm text-on-surface-variant">No comments yet.</p>
-                )}
-              </div>
-            </section>
-
-            <section className="rounded-3xl border border-outline/10 bg-surface-container-lowest p-6 shadow-ambient">
-              <div className="mb-5">
+          <aside className="space-y-5 xl:sticky xl:top-28 xl:self-start">
+            <section className="rounded-2xl border border-primary/15 bg-surface-container-lowest p-4 shadow-ambient">
+              <div className="mb-4">
                 <p className="text-xs font-semibold uppercase tracking-[0.2em] text-primary">Decision Panel</p>
-                <h2 className="mt-2 font-display text-xl font-bold text-on-surface">Compliance Decision</h2>
+                <h2 className="mt-1 font-display text-xl font-bold text-on-surface">Compliance Decision</h2>
+                <p className="mt-2 text-xs leading-5 text-on-surface-variant">
+                  Approve only when checklist and risk conditions are clear. Other decisions require a note.
+                </p>
               </div>
               <textarea
                 value={decisionNote}
                 onChange={(event) => setDecisionNote(event.target.value)}
-                rows={3}
-                placeholder="Decision note or RM feedback (required)..."
-                className={`mb-3 w-full resize-none rounded-xl border px-3 py-2.5 text-sm text-on-surface focus:outline-none focus:ring-2 ${
+                rows={4}
+                placeholder="Decision note or RM feedback..."
+                className={`mb-3 w-full resize-none rounded-xl border px-3 py-2.5 text-sm leading-6 text-on-surface focus:outline-none focus:ring-2 ${
                   decisionNoteMissing ? 'border-error/50 bg-error/5 focus:ring-error/20' : 'border-outline/15 bg-surface focus:ring-primary/20'
                 }`}
               />
-              {attemptedSubmit && decisionNoteMissing && (
+              {attemptedSubmit && decisionNoteMissing ? (
                 <p className="mb-3 rounded-xl bg-error/10 px-3 py-2 text-xs text-error">
-                  Decision note is required before submitting any action.
-                </p>
-              )}
-              {approvalIssues.length > 0 ? (
-                <p className="mb-3 rounded-xl bg-warning/10 px-3 py-2 text-xs text-warning">
-                  Approve is unavailable: {approvalIssues.join(' ')}
+                  Decision note required.
                 </p>
               ) : null}
-              <div className="space-y-2">
+              {approvalIssues.length > 0 ? (
+                <div className="mb-3 rounded-xl bg-warning/10 px-3 py-2 text-xs leading-5 text-warning">
+                  <p className="font-semibold">Approval blockers</p>
+                  {!checklist?.allComplete ? (
+                    <p>Approval blocked: Checklist {checklist?.completed ?? 0}/{checklist?.total ?? 0} complete.</p>
+                  ) : null}
+                  {!completion?.allRequiredComplete ? (
+                    <p>Approval blocked: Documents {completion?.requiredCompletedCount ?? 0}/{completion?.requiredTotal ?? 0} complete.</p>
+                  ) : null}
+                  {riskFlags.some((flag) => /high|critical/i.test(String(flag.severity || ''))) ? (
+                    <p>Approval blocked: High or critical risk items remain open.</p>
+                  ) : null}
+                  {decisionNoteMissing ? <p>Decision note required.</p> : null}
+                </div>
+              ) : null}
+              <div className="grid grid-cols-1 gap-2">
                 <button
                   onClick={() => handleDecision('approve')}
                   className={`flex w-full items-center justify-center gap-2 rounded-xl px-4 py-2.5 text-sm font-semibold text-white ${
@@ -817,20 +905,161 @@ export default function ComplianceCaseReview({ onNavigate }) {
                 </button>
                 <button
                   onClick={() => handleDecision('request_info')}
-                  disabled={anyDecisionDisabled}
+                  disabled={requestInfoDisabled}
                   className="flex w-full items-center justify-center gap-2 rounded-xl border border-warning/30 bg-warning/10 px-4 py-2.5 text-sm font-semibold text-warning hover:bg-warning/15 disabled:cursor-not-allowed disabled:opacity-50"
                 >
                   <AlertTriangle className="h-4 w-4" />
                   Request More Information
                 </button>
                 <button
+                  onClick={() => handleDecision('escalate')}
+                  disabled={escalateDisabled}
+                  className="flex w-full items-center justify-center gap-2 rounded-xl border border-primary/25 bg-primary/10 px-4 py-2.5 text-sm font-semibold text-primary hover:bg-primary/15 disabled:cursor-not-allowed disabled:opacity-50"
+                >
+                  <ShieldAlert className="h-4 w-4" />
+                  Escalate to Senior Compliance
+                </button>
+                <button
                   onClick={() => handleDecision('reject')}
-                  disabled={anyDecisionDisabled}
+                  disabled={rejectDisabled}
                   className="flex w-full items-center justify-center gap-2 rounded-xl border border-error/30 bg-error/10 px-4 py-2.5 text-sm font-semibold text-error hover:bg-error/15 disabled:cursor-not-allowed disabled:opacity-50"
                 >
                   <XCircle className="h-4 w-4" />
                   Reject Case
                 </button>
+              </div>
+            </section>
+
+            <section className="rounded-2xl border border-outline/10 bg-surface-container-lowest p-4 shadow-ambient">
+              <div className="mb-4 flex items-center justify-between gap-3">
+                <div className="flex items-center gap-3">
+                  <CheckSquare className="h-5 w-5 text-primary" />
+                  <h2 className="font-display text-xl font-bold text-on-surface">Review Summary</h2>
+                </div>
+                {checklist && (
+                  <span className={`rounded-full px-3 py-1 text-xs font-semibold ${
+                    checklist.allComplete ? 'bg-success/12 text-success' : 'bg-warning/15 text-warning'
+                  }`}>
+                    {checklist.completed}/{checklist.total}
+                  </span>
+                )}
+              </div>
+              <div className="grid grid-cols-2 gap-2">
+                <div className="rounded-xl bg-surface p-3">
+                  <p className="text-xs uppercase tracking-[0.16em] text-on-surface-variant">Documents</p>
+                  <p className="mt-1 text-lg font-bold text-on-surface">
+                    {completion?.requiredCompletedCount ?? 0}/{completion?.requiredTotal ?? 0}
+                  </p>
+                </div>
+                <div className="rounded-xl bg-surface p-3">
+                  <p className="text-xs uppercase tracking-[0.16em] text-on-surface-variant">Checklist</p>
+                  <p className="mt-1 text-lg font-bold text-on-surface">{checklist?.completed ?? 0}/{checklist?.total ?? 0}</p>
+                </div>
+                <div className="rounded-xl bg-surface p-3">
+                  <p className="text-xs uppercase tracking-[0.16em] text-on-surface-variant">Risk Items</p>
+                  <p className="mt-1 text-lg font-bold text-on-surface">{riskFlags.length}</p>
+                </div>
+                <div className="rounded-xl bg-surface p-3">
+                  <p className="text-xs uppercase tracking-[0.16em] text-on-surface-variant">Open Blockers</p>
+                  <p className="mt-1 text-lg font-bold text-on-surface">{openBlockers}</p>
+                </div>
+              </div>
+            </section>
+
+            <section className="rounded-2xl border border-outline/10 bg-surface-container-lowest p-5 shadow-ambient">
+              <div className="mb-4 flex items-center justify-between gap-3">
+                <div className="flex items-center gap-3">
+                  <CheckSquare className="h-5 w-5 text-primary" />
+                  <h2 className="font-display text-xl font-bold text-on-surface">Compliance Checklist</h2>
+                </div>
+                {checklist ? (
+                  <span className={`rounded-full px-3 py-1 text-xs font-semibold ${
+                    checklist.allComplete ? 'bg-success/12 text-success' : 'bg-warning/15 text-warning'
+                  }`}>
+                    {checklist.completed}/{checklist.total}
+                  </span>
+                ) : null}
+              </div>
+              <div className="space-y-3">
+                {checklistGroups.map(([group, items]) => (
+                  <div key={group} className="rounded-xl border border-outline/10 bg-surface p-3">
+                    <div className="mb-2 flex items-center justify-between">
+                      <p className="text-xs font-semibold uppercase tracking-[0.16em] text-on-surface-variant">{group}</p>
+                      <span className="text-xs font-semibold text-on-surface">
+                        {items.filter((item) => item.checked).length}/{items.length}
+                      </span>
+                    </div>
+                    <div className="space-y-2">
+                      {items.map((item) => (
+                        <label key={item.key} className="flex cursor-pointer items-start gap-2 rounded-lg px-2 py-1.5 hover:bg-surface-container-low">
+                          {item.checked ? (
+                            <CheckCircle2 className="mt-0.5 h-4 w-4 shrink-0 text-success" />
+                          ) : (
+                            <Circle className="mt-0.5 h-4 w-4 shrink-0 text-on-surface-variant" />
+                          )}
+                          <div className="min-w-0 flex-1">
+                            <p className="text-sm font-semibold leading-5 text-on-surface">{item.label}</p>
+                            <p className="mt-0.5 text-xs leading-5 text-on-surface-variant">
+                              {item.checked ? `Checked by ${item.checkedBy || 'Compliance'}${item.checkedAt ? ` at ${formatDateTime(item.checkedAt)}` : ''}` : 'Open'}
+                            </p>
+                          </div>
+                          <input
+                            type="checkbox"
+                            checked={!!item.checked}
+                            onChange={(e) => handleChecklistToggle(item.key, e.target.checked)}
+                            className="sr-only"
+                          />
+                        </label>
+                      ))}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </section>
+
+            <section className="rounded-2xl border border-outline/10 bg-surface-container-lowest p-4 shadow-ambient">
+              <div className="mb-4 flex items-center gap-3">
+                <MessageCircle className="h-5 w-5 text-primary" />
+                <h2 className="font-display text-xl font-bold text-on-surface">Comments</h2>
+              </div>
+              <div className="space-y-3">
+                <select
+                  value={commentAudience}
+                  onChange={(event) => setCommentAudience(event.target.value)}
+                  className="w-full rounded-xl border border-outline/15 bg-surface px-3 py-2.5 text-sm text-on-surface focus:outline-none focus:ring-2 focus:ring-primary/20"
+                >
+                  <option value="Internal">Internal Note</option>
+                  <option value="RM Feedback">RM Feedback</option>
+                  <option value="Decision Note">Decision Note</option>
+                  <option value="Escalation Note">Escalation Note</option>
+                </select>
+                <textarea
+                  value={commentText}
+                  onChange={(event) => setCommentText(event.target.value)}
+                  rows={3}
+                  placeholder="Add compliance note..."
+                  className="w-full resize-none rounded-xl border border-outline/15 bg-surface px-3 py-2.5 text-sm text-on-surface focus:outline-none focus:ring-2 focus:ring-primary/20"
+                />
+                <button onClick={handleAddComment} className="inline-flex w-full items-center justify-center gap-2 rounded-xl bg-primary px-4 py-2.5 text-sm font-semibold text-white hover:bg-primary/90">
+                  <Send className="h-4 w-4" />
+                  Add Comment
+                </button>
+              </div>
+              <div className="mt-5 space-y-3">
+                {comments.length > 0 ? comments.slice(0, 4).map((comment) => (
+                  <div key={comment.id} className="rounded-xl bg-surface p-3">
+                    <div className="flex items-center justify-between gap-3">
+                      <p className="text-sm font-semibold text-on-surface">{comment.author || 'Compliance Officer'}</p>
+                      <span className="rounded-full bg-surface-container-high px-2 py-1 text-[11px] font-semibold text-on-surface-variant">
+                        {comment.decision === 'request_info' ? 'Request Info' : comment.audience || 'Internal'}
+                      </span>
+                    </div>
+                    <p className="mt-2 text-sm leading-6 text-on-surface-variant">{comment.text}</p>
+                    <p className="mt-2 text-xs text-on-surface-variant">{formatDateTime(comment.createdAt)}</p>
+                  </div>
+                )) : (
+                  <p className="rounded-2xl bg-surface p-4 text-sm text-on-surface-variant">No comments yet.</p>
+                )}
               </div>
             </section>
 
